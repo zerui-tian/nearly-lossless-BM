@@ -66,6 +66,7 @@ std::string flowthroughput_output_file;
 std::string qlen_output_file;
 std::string qlen_dist_output_file;
 std::string flowrate_output_file;
+std::string unfinished_flow_output_file = "/home/pnic/bm/nearly-lossless-BM/ns-3/simulator/ns-3-buffer-oversubscription/examples/SharedCredit-FC/16-large-scale/unfinished_flows.txt";
 
 uint32_t qlen_dump_interval;
 uint32_t qlen_mon_interval;
@@ -94,6 +95,10 @@ uint32_t maxThreshold = 100000;
 uint32_t p_queue_count = 8;
 float qmin = 3;
 float qmax = 6;
+
+// 示例值，按实验需求配置。
+uint32_t credit_grant_bytes = 1048;
+uint64_t credit_grant_interval_ns = credit_grant_bytes * 8 / 100;
 
 unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
 unordered_map<uint64_t, double> rate2pmax;
@@ -187,6 +192,107 @@ Ipv4Address node_id_to_ip(uint32_t id) {
 
 uint32_t ip_to_node_id(Ipv4Address ip) {
 	return (ip.Get() >> 8) & 0xffff;
+}
+
+void dump_unfinished_flows(const std::string& output_file) {
+	std::vector<Ptr<RdmaQueuePair>> unfinished_qps;
+	for (uint32_t i = 0; i < n.GetN(); i++) {
+		if (n.Get(i)->GetNodeType() != 0)
+			continue;
+		Ptr<RdmaDriver> driver = n.Get(i)->GetObject<RdmaDriver>();
+		if (driver == NULL || driver->m_rdma == NULL)
+			continue;
+		for (const auto& entry : driver->m_rdma->m_qpMap) {
+			Ptr<RdmaQueuePair> qp = entry.second;
+			if (qp->snd_una < qp->m_size)
+				unfinished_qps.push_back(qp);
+		}
+	}
+
+	std::sort(unfinished_qps.begin(), unfinished_qps.end(),
+		[](const Ptr<RdmaQueuePair>& lhs, const Ptr<RdmaQueuePair>& rhs) {
+			return lhs->dport < rhs->dport;
+		});
+
+	std::ofstream output(output_file);
+	NS_ABORT_MSG_IF(!output.is_open(), "Cannot open unfinished-flow output file: " << output_file);
+	output << "dport\tflow_size\tsnd_nxt\tsnd_una\texp_seq\n";
+
+	for (const Ptr<RdmaQueuePair>& qp : unfinished_qps) {
+		uint32_t dst_node = ip_to_node_id(qp->dip);
+
+		NS_ASSERT_MSG(dst_node < n.GetN(), "QP destination node is outside the topology");
+		Ptr<RdmaDriver> receiver_driver = n.Get(dst_node)->GetObject<RdmaDriver>();
+		Ptr<RdmaRxQueuePair> rx_qp = receiver_driver == NULL || receiver_driver->m_rdma == NULL
+			? NULL
+			: receiver_driver->m_rdma->GetRxQp(
+				qp->dip.Get(), qp->sip.Get(), qp->dport, qp->sport, qp->m_pg, false);
+
+		uint64_t receiver_expected = rx_qp == NULL ? 0 : rx_qp->ReceiverNextExpectedSeq;
+		output << qp->dport << '\t' << qp->m_size << '\t' << qp->snd_nxt << '\t'
+			   << qp->snd_una << '\t' << receiver_expected << '\n';
+	}
+	std::cout << "Unfinished flows: " << unfinished_qps.size()
+			  << ", details written to " << output_file << std::endl;
+}
+
+// End-of-simulation snapshot: inspect every switch egress with zero credit.
+// Node IDs are GetId(); port IDs are the devices' GetIfIndex().
+void dump_zero_credit_ports(const NodeContainer& nodes) {
+	uint32_t matched_ports = 0;
+	std::cout << "\nZERO_CREDIT_PORTS time_ns="
+			  << Simulator::Now().GetNanoSeconds() << '\n';
+	std::cout << "link\tfccl\tfctbs\tegress_bytes_pt"
+			  << "\tdownstream_abr\tdownstream_granted_credit\tdownstream_used_bytes\n";
+
+	for (uint32_t i = 0; i < nodes.GetN(); ++i) {
+		Ptr<SwitchNode> upstream = DynamicCast<SwitchNode>(nodes.Get(i));
+		if (!upstream)
+			continue;
+
+		for (uint32_t j = 0; j < upstream->GetNDevices(); ++j) {
+			Ptr<QbbNetDevice> output_device =
+				DynamicCast<QbbNetDevice>(upstream->GetDevice(j));
+			if (!output_device)
+				continue; // Skip loopback and other non-Qbb devices.
+
+			const uint32_t out_port = output_device->GetIfIndex();
+			NS_ASSERT_MSG(out_port < SwitchMmu::pCnt, "Egress port exceeds MMU arrays");
+			if (upstream->m_mmu->fccl[out_port] - upstream->m_mmu->fctbs[out_port] >= 1048)
+				continue;
+
+			++matched_ports; // Include matching ports even when the egress queue is empty.
+			Ptr<NetDevice> input_device;
+			if (output_device->GetChannel() &&
+				output_device->GetChannel()->GetNDevices() == 2) {
+				input_device = output_device->GetRemoteDevice();
+			}
+			Ptr<SwitchNode> downstream;
+			std::cout << "switch " << upstream->GetId() << ':' << out_port << " -> ";
+			if (input_device && input_device->GetNode()) {
+				downstream = DynamicCast<SwitchNode>(input_device->GetNode());
+				std::cout << (downstream ? "switch " : "NIC ")
+						  << input_device->GetNode()->GetId() << ':' << input_device->GetIfIndex();
+			} else {
+				std::cout << "N/A";
+			}
+
+			std::cout << '\t' << upstream->m_mmu->fccl[out_port]
+					  << '\t' << upstream->m_mmu->fctbs[out_port]
+					  << '\t' << upstream->m_mmu->egress_bytes_pt[out_port];
+			if (downstream) {
+				const uint32_t in_port = input_device->GetIfIndex();
+				NS_ASSERT_MSG(in_port < SwitchMmu::pCnt, "Ingress port exceeds MMU arrays");
+				std::cout << '\t' << downstream->m_mmu->abr[in_port]
+						  << '\t' << downstream->m_mmu->granted_credit[in_port]
+						  << '\t' << downstream->m_mmu->used_bytes[in_port];
+			} else {
+				std::cout << "\tN/A\tN/A\tN/A"; // NICs have no SwitchMmu.
+			}
+			std::cout << '\n';
+		}
+	}
+	std::cout << "ZERO_CREDIT_PORTS count=" << matched_ports << std::endl;
 }
 
 void qp_finish(FILE* fout, Ptr<RdmaQueuePair> q) {
@@ -1230,10 +1336,10 @@ int main(int argc, char *argv[])
 	
 	nic_rate = get_nic_rate(n);
 	uint32_t packet_size = packet_payload_size + CustomHeader::GetStaticWholeHeaderSize();
-	uint32_t step_bytes = packet_size * 1;
+	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = SwitchMmu::pCnt * (0.7 * 100 * 1000 * 2 / 8);
+	buffer_size = SwitchMmu::pCnt * (1 * 100 * 1000 * 2 / 8);
 	uint32_t per_port_buffer = buffer_size / SwitchMmu::pCnt;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch
@@ -1253,8 +1359,8 @@ int main(int argc, char *argv[])
 					NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
 					sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
 					sw->m_mmu->maxThreshold = per_port_buffer;
-					sw->m_mmu->SetInflightThreshold(j, qu, per_port_buffer);
-					sw->m_mmu->step[j][qu] = per_port_buffer;
+					sw->m_mmu->SetInflightThreshold(j, qu, packet_size * 2);
+					// sw->m_mmu->step[j][qu] = step_bytes;
 				}
 			}
 			sw->m_mmu->SetQlenMax(qmax*packet_size);
@@ -1314,7 +1420,7 @@ int main(int argc, char *argv[])
 				Ptr<QbbNetDevice> dev = rdmaHw->m_nic[j].dev;
 				if (dev == NULL)
 					continue;
-				dev->perpt_fccl = per_port_buffer;
+				dev->perpt_fccl = 0;
 				dev->m_rdmaEQ->m_mtu = packet_payload_size;
 				dev->SetQlenMax(qmax*packet_size);
 				dev->SetQlenMin(qmin*packet_size);
@@ -1326,8 +1432,8 @@ int main(int argc, char *argv[])
 				// uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
 				dev->maxThreshold = per_port_buffer;
 				for(int qu = 0; qu < QbbNetDevice::qCnt; qu++){
-					dev->perpg_inflight_threshold[qu] = per_port_buffer;//sgh 10/18
-					dev->m_step[qu] = per_port_buffer;
+					dev->perpg_inflight_threshold[qu] = packet_size * 2;//sgh 10/18
+					// dev->m_step[qu] = step_bytes;
 				}
 			}
 		}
@@ -1413,12 +1519,48 @@ int main(int argc, char *argv[])
 	FILE *flowthroughput_file = fopen(flowthroughput_output_file.c_str(), "w");
 	std::vector<uint32_t> target_fids = {10000};
 
-	// Simulator::Schedule(NanoSeconds(flowthroughput_mon_start), monitor_flowlink, flowthroughput_file, &nd, target_fids);
+	Simulator::Schedule(NanoSeconds(flowthroughput_mon_start), monitor_flowlink, flowthroughput_file, &nd, target_fids);
 
 	std::cout << "Running Simulation.\n";
 	NS_LOG_INFO("Run Simulation.");
 	Simulator::Stop(Seconds(simulator_stop_time));
+	// 启动每台交换机的发牌器。
+	for (uint32_t i = 0; i < n.GetN(); ++i)
+	{
+		Ptr<SwitchNode> sw =
+			DynamicCast<SwitchNode>(n.Get(i));
+
+		if (!sw)
+		{
+			continue;
+		}
+
+		sw->StartCreditDistribution(
+			credit_grant_bytes,
+			NanoSeconds(credit_grant_interval_ns));
+	}
+	for (uint32_t i = 0; i < n.GetN(); ++i)
+	{
+		Ptr<Node> node = n.Get(i);
+
+		for (uint32_t j = 0; j < node->GetNDevices(); ++j)
+		{
+			Ptr<QbbNetDevice> dev =
+				DynamicCast<QbbNetDevice>(node->GetDevice(j));
+
+			if (!dev || !dev->IsLinkUp())
+			{
+				continue;
+			}
+
+			Simulator::ScheduleNow(
+				&QbbNetDevice::StartHeartbeat,
+				dev);
+		}
+	}
 	Simulator::Run();
+	dump_zero_credit_ports(n);
+	dump_unfinished_flows(unfinished_flow_output_file);
 	Simulator::Destroy();
 	NS_LOG_INFO("Done.");
 	endt = clock();

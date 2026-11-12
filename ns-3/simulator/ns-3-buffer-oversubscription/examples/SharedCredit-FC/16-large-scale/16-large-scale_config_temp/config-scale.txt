@@ -8,7 +8,7 @@ TRACE_FILE examples/SharedCredit-FC/16-large-scale/monitor_output/trace.txt
 TRACE_OUTPUT_FILE examples/SharedCredit-FC/16-large-scale/monitor_output/mix.tr
 PFC_OUTPUT_FILE examples/SharedCredit-FC/16-large-scale/monitor_output/pfc.txt
 
-SIMULATOR_STOP_TIME 100
+SIMULATOR_STOP_TIME 0.0001
 
 CC_MODE 0
 ALPHA_RESUME_INTERVAL 1
@@ -47,15 +47,15 @@ LINK_DOWN 0 0 0
 
 ENABLE_TRACE 1
 
-QMIN 5
-QMAX 10
+QMIN 2
+QMAX 4
 
 KMAX_MAP 3 25000000000 400 50000000000 800 100000000000 1600
 KMIN_MAP 3 25000000000 100 50000000000 200 100000000000 400
 PMAX_MAP 3 25000000000 0.2 50000000000 0.2 100000000000 0.2
-FLOW_FILE /home/pnic/bm/nearly-lossless-BM/ns-3/simulator/ns-3-nearly-lossless-BM/examples/SharedCredit-FC/16-large-scale/flow/W4_load80.txt
-FCT_OUTPUT_FILE /home/pnic/bm/nearly-lossless-BM/ns-3/simulator/result/data/16-large-scale/infiniflow/fct/W4_load80.txt
-QLEN_MON_FILE /home/pnic/bm/nearly-lossless-BM/ns-3/simulator/result/data/16-large-scale/infiniflow/qlen/W4_load80.txt
+FLOW_FILE /home/pnic/bm/nearly-lossless-BM/ns-3/simulator/ns-3-buffer-oversubscription/examples/SharedCredit-FC/16-large-scale/flow/W3_load80.txt
+FCT_OUTPUT_FILE /home/pnic/bm/nearly-lossless-BM/ns-3/simulator/result/data/16-large-scale/infiniflow/fct/W3_load80.txt
+QLEN_MON_FILE /home/pnic/bm/nearly-lossless-BM/ns-3/simulator/result/data/16-large-scale/infiniflow/qlen/W3_load80.txt
 QLEN_DUMP_INTERVAL 50000
 QLEN_MON_INTERVAL 5000
 QLEN_MON_END 0

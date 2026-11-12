@@ -31,7 +31,7 @@ sed -i "s/#define P_CNT [0-9]*/#define P_CNT $P_CNT_VALUE/" "$HEADER_FILE"
 sed -i "s/#define OUTPUT_1 [0-9]*/#define OUTPUT_1 0/" "$HEADER_FILE"
 
 # modelNames=("W3" "W4")
-modelNames=("W4")
+modelNames=("W3")
 # loadNums=("40" "80") # 4
 loadNums=("80") # 4
 
