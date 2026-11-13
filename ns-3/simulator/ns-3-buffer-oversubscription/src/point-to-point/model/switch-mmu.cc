@@ -36,6 +36,7 @@ SwitchMmu::SwitchMmu(void) {
 
 	memset(ingress_bytes, 0, sizeof(ingress_bytes));
 	memset(egress_bytes, 0, sizeof(egress_bytes));
+	memset(egress_bytes_pt, 0, sizeof(egress_bytes_pt));
 	total_used_buffer = 0;
 	memset(fctbs, 0, sizeof(fctbs));
 	memset(abr, 0, sizeof(abr));
@@ -46,6 +47,11 @@ SwitchMmu::SwitchMmu(void) {
 	memset(need_set_tap, 0, sizeof(need_set_tap));
 	memset(need_ret_tap, 0, sizeof(need_ret_tap));
 	memset(rate_adjusting, 0, sizeof(rate_adjusting));
+	
+	memset(fccl, 0, sizeof(fccl));
+	credit_pool = 0;
+	memset(granted_credit, 0, sizeof(granted_credit));
+	memset(buffer_size, 0, sizeof(buffer_size));
 }
 
 bool SwitchMmu::CheckIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize) {
@@ -78,6 +84,7 @@ void SwitchMmu::UpdateIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t 
 
 void SwitchMmu::UpdateEgressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize) {
 	egress_bytes[port][qIndex] += psize;
+	egress_bytes_pt[port] += psize; //统计出口端口的信息
 	#if OUTPUT_1
 	std::cout << "Time " << Simulator::Now().GetNanoSeconds() << " egress_bytes " << egress_bytes[port][qIndex] <<
 				 " node " << node_id << " port " << port << " qIndex " << qIndex << std::endl;
@@ -105,6 +112,8 @@ void SwitchMmu::RemoveFromIngressAdmission(uint32_t port, uint32_t qIndex, uint3
 	}
 
 	accumu_drained_bytes[port][qIndex] += psize;
+	credit_pool += psize; // IMPORTANT: credit_pool is only updated in the ingress. No need to update in egress. Avoid double counting.
+	granted_credit[port] -= psize; // IMPORTANT: granted_credit is only updated in the ingress. No need to update in egress. Avoid double counting.
 	#if OUTPUT_1
 	std::cout << "Time " << Simulator::Now().GetNanoSeconds() 
 		<< " abr " << abr[port] 
@@ -120,10 +129,15 @@ void SwitchMmu::RemoveFromIngressAdmission(uint32_t port, uint32_t qIndex, uint3
 void SwitchMmu::RemoveFromEgressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize) {
 	fctbs[port] += psize;
 	accumu_used_credit[port][qIndex] += psize;
-	if (egress_bytes[port][qIndex] >= psize)
+	if (egress_bytes[port][qIndex] >= psize) {
 		egress_bytes[port][qIndex] -= psize;
-	else
+		egress_bytes_pt[port] -= psize; //统计出口端口的信息
+	}
+		
+	else{
 		egress_bytes[port][qIndex] = 0;
+		egress_bytes_pt[port] = 0; 
+	}
 		
 	#if OUTPUT_1
 	std::cout << "Time " << Simulator::Now().GetNanoSeconds() 
@@ -142,11 +156,10 @@ Ptr<Packet> SwitchMmu::ConstructFcp(uint32_t inDev, uint32_t qIndex){
 	FcpHeader fcph = FcpHeader();
 	fcph.SetVl(qIndex);
 	
-	uint32_t fccl_ =  abr[inDev] + (buffer_size[inDev] - used_bytes[inDev]);
-	fcph.SetFccl(fccl_);
+	// uint32_t fccl_ =  abr[inDev] + (buffer_size[inDev] - used_bytes[inDev]);
+	fcph.SetFccl(GetAdvertisedFccl(inDev));
 	fcph.SetQlen(ingress_bytes[inDev][qIndex]);
 	fcph.SetFccr(accumu_drained_bytes[inDev][qIndex]);
-	fcph.SetStep(step[inDev][qIndex]);
 	if(need_ret_tap[inDev][qIndex]){
 		fcph.SetTap();
 		need_ret_tap[inDev][qIndex] = false;
@@ -184,11 +197,14 @@ void SwitchMmu::ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double 
 
 void SwitchMmu::SetBufferPool(uint64_t b) {
 	total_buffer = b;
-	uint32_t per_port_buffer_size = b / pCnt;
+	credit_pool = b;
+	// uint32_t per_port_buffer_size = b / pCnt;
 	for(int p = 0; p < pCnt; p++){
-		buffer_size[p] = per_port_buffer_size;
-		fccl[p] = buffer_size[p]; 
+		// buffer_size[p] = per_port_buffer_size;
+		// fccl[p] = buffer_size[p]; 
+		granted_credit[p] = 0;
 	}
+	granted_credit_top = b / pCnt;
 }
 
 void SwitchMmu::SetInflightThreshold(u_int32_t port, uint32_t qIndex, uint32_t threshold){
@@ -203,8 +219,51 @@ void SwitchMmu::SetQlenMin(u_int32_t value){
 	qlen_min = value;
 }
 
-// void SwitchMmu::SetAiStep(u_int32_t value){
-// 	ai_step = value;
-// }
+//尝试给port发bytes这么大的牌
+//返回值：全局 global credit pool 中是否还有余量支持发牌
+bool SwitchMmu::GrantCredit(uint32_t port, uint32_t bytes) 
+{
+    NS_ASSERT(port < pCnt);
+    NS_ASSERT(bytes > 0);
+
+    if (credit_pool < bytes)
+    {
+        return false;
+    }
+	if(granted_credit[port] + bytes > granted_credit_top){
+		return true;
+	}
+    credit_pool -= bytes;
+	
+    granted_credit[port] += bytes;
+
+    // 保持原有端口容量统计与分配结果一致。
+    buffer_size[port] = granted_credit[port];
+
+    // std::cout
+    //     << "Time " << Simulator::Now().GetNanoSeconds()
+    //     << " CREDIT_GRANT"
+    //     << " node " << node_id
+    //     << " port " << port
+    //     << " grant " << bytes
+    //     << " granted_total " << granted_credit[port]
+    //     << " pool_left " << credit_pool
+    //     << std::endl;
+
+    return true;
+}
+
+uint32_t SwitchMmu::GetAdvertisedFccl(uint32_t port) const
+{
+    NS_ASSERT(port < pCnt);
+
+    return abr[port]
+         - used_bytes[port]
+         + granted_credit[port];
+}
+
+void SwitchMmu::SetAiStep(u_int32_t value){
+	ai_step = value;
+}
 
 }

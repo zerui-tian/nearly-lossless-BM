@@ -131,13 +131,6 @@ public:
 	bool IsFinished();
 	uint64_t HpGetCurWin(); // window size calculated from hp.m_curRate, used by HPCC
 	uint32_t incastFlow;
-
-	// The timer tracks unacknowledged data, including a lost final packet/ACK.
-	EventId m_retransmitEvent;
-	Time m_retransmitTimeout;
-	uint64_t m_highestSent = 0;
-	uint64_t m_rtoCount = 0;
-	uint64_t m_retransmittedPackets = 0;
 };
 
 class RdmaRxQueuePair : public Object { // Rx side queue pair

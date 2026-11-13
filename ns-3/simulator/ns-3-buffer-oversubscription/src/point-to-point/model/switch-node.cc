@@ -20,6 +20,7 @@
 #include "ns3/uinteger.h"
 #include "ns3/unsched-tag.h"
 #include "ns3/fcp-header.h"
+#include "ns3/heartbeat-header.h"
 
 #include <cmath>
 
@@ -192,6 +193,8 @@ SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader& ch)
             Ptr<Packet> fcp = m_mmu->ConstructFcp(inDev, qIndex);
             Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[inDev]);
             dev->SendFcp(fcp);
+            std::cout << "buffer overflow"
+                  << std::endl;
         }
     }
     else
@@ -276,7 +279,7 @@ SwitchNode::SwitchReceiveFcp(Ptr<Packet> p,uint32_t port) {
     PppHeader ph;
     p->RemoveHeader(ph);
     FcpHeader fh;
-    p->RemoveHeader(fh);
+    p->RemoveHeader(fh); 
     uint32_t qIndex = fh.GetVl();
     uint32_t fccl = fh.GetFccl();
     uint32_t fccr = fh.GetFccr();
@@ -486,6 +489,82 @@ SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p
     m_lastPktSize[ifIndex] = p->GetSize();
     m_lastPktTs[ifIndex] = Simulator::Now().GetTimeStep();
     
+}
+
+void SwitchNode::StartCreditDistribution(uint32_t grantBytes,
+                                         Time interval) //初始触发发牌机制，每隔interval时间发一次牌，每次给每个port发grantBytes这么大的牌
+{
+    NS_ASSERT_MSG(grantBytes > 0,
+                  "Credit grant size must be positive");
+
+    NS_ASSERT_MSG(interval > Seconds(0),
+                  "Credit grant interval must be positive");
+
+    if (m_creditDistributionStarted)
+    {
+        return;
+    }
+
+    m_creditPorts.clear();
+
+    for (uint32_t port = 0; port < GetNDevices(); ++port)
+    {
+        Ptr<QbbNetDevice> dev =
+            DynamicCast<QbbNetDevice>(GetDevice(port));
+
+        // 跳过 loopback、未连接或不可用设备。
+        if (!dev || !dev->IsLinkUp())
+        {
+            continue;
+        }
+
+        NS_ASSERT_MSG(port < pCnt,
+                      "Device index exceeds MMU port array");
+
+        m_creditPorts.push_back(port);
+    }
+
+    if (m_creditPorts.empty())
+    {
+        return;
+    }
+
+    m_creditGrantBytes = grantBytes;
+    m_creditGrantInterval = interval;
+    m_creditDistributionStarted = true;
+
+    // 第一轮在当前仿真时刻执行。
+    Simulator::ScheduleNow(
+        &SwitchNode::DistributeCredit,
+        this);
+}
+
+void SwitchNode::DistributeCredit() //循环发牌
+{
+    // 一个事件：给全部有效端口各发一份。
+    int valid_port_num = m_creditPorts.size();
+    for(int i = 1; i <= valid_port_num; i++)
+    // for (uint32_t port : m_creditPorts)
+    {
+        if (!m_mmu->GrantCredit(m_creditPorts[rr_cred_dis_ptr], m_creditGrantBytes)) // 如果没有牌可发就break
+        {
+            // std::cout
+            //     << "Time " << Simulator::Now().GetNanoSeconds()
+            //     << " CREDIT_DISTRIBUTION_FINISHED"
+            //     << " node " << GetId()
+            //     << " pool_left " << m_mmu->credit_pool
+            //     << std::endl;
+
+            // 不足一份牌，这次分配结束，等待下次分配。
+            break;
+        }
+        rr_cred_dis_ptr = (rr_cred_dis_ptr + 1) % valid_port_num;
+    }
+
+    Simulator::Schedule(
+        m_creditGrantInterval,
+        &SwitchNode::DistributeCredit,
+        this);
 }
 
 int

@@ -37,7 +37,7 @@ public:
 	void SetInflightThreshold(u_int32_t port, uint32_t qIndex, uint32_t threshold);
 	void SetQlenMax(u_int32_t value);
 	void SetQlenMin(u_int32_t value);
-	// void SetAiStep(u_int32_t value);
+	void SetAiStep(u_int32_t value);
 
 	// config
 	uint32_t node_id;
@@ -64,13 +64,21 @@ public:
 	uint32_t fccl[pCnt]; 
 	uint32_t buffer_size[pCnt]; 
 	uint32_t used_bytes[pCnt]; 
-
+	uint32_t egress_bytes_pt[pCnt];
 	uint32_t total_buffer;
 
 	uint32_t qlen_max;
 	uint32_t qlen_min;
 	uint32_t ai_step;
-	uint32_t step[pCnt][qCnt];
+	// 公共池总量
+	uint64_t credit_pool;
+	// 每个端口累计分到的牌的最大值
+	uint32_t granted_credit_top;
+	// 每个端口累计分到的牌。
+	uint32_t granted_credit[pCnt];
+	bool GrantCredit(uint32_t port, uint32_t bytes);
+	// FCP 和心跳回复共用的反馈公式。
+	uint32_t GetAdvertisedFccl(uint32_t port) const;
 };
 
 } /* namespace ns3 */

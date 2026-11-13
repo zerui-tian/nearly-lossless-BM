@@ -25,9 +25,6 @@ public:
     void SetFccr(uint32_t fccr);
 
     void SetTap();
-
-    void SetStep(uint32_t step);
-
     void ResetTap();
     bool GetTap();
 
@@ -38,8 +35,6 @@ public:
     uint32_t GetFccl();
 
     uint32_t GetFccr();
-
-    uint32_t GetStep();
 
     virtual TypeId GetInstanceTypeId (void) const;
     virtual void Print (std::ostream &os) const;
@@ -55,7 +50,6 @@ public:
     uint32_t m_qlen;
     uint32_t m_fccl;
     uint32_t m_fccr;
-    uint32_t m_step;
 
 };
 

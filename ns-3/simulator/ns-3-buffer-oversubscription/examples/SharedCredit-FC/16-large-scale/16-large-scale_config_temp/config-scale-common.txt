@@ -8,7 +8,7 @@ TRACE_FILE examples/SharedCredit-FC/16-large-scale/monitor_output/trace.txt
 TRACE_OUTPUT_FILE examples/SharedCredit-FC/16-large-scale/monitor_output/mix.tr
 PFC_OUTPUT_FILE examples/SharedCredit-FC/16-large-scale/monitor_output/pfc.txt
 
-SIMULATOR_STOP_TIME 0.0001
+SIMULATOR_STOP_TIME 0.0016
 
 CC_MODE 0
 ALPHA_RESUME_INTERVAL 1

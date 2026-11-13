@@ -29,6 +29,7 @@
 #include "ns3/interface-tag.h"
 #include "ns3/unsched-tag.h"
 #include "ns3/fcp-header.h"
+#include "ns3/heartbeat-header.h"
 #include "switch-node.h"
 #include <iostream>
 
@@ -88,10 +89,15 @@ int RdmaEgressQueue::GetNextQindex(uint32_t credit, uint32_t inflight[], uint32_
 	if (m_fcpQ->GetNPackets() > 0) {
 		return -2;
 	}
-	else if (m_ackQ->GetNPackets() > 0 && 
-			// credit >= m_ackQ->Peek()->GetSize() &&
+	else if (
+			m_ackQ->GetNPackets() > 0 && 
+			credit >= m_ackQ->Peek()->GetSize() &&
 			uint64_t(inflight[1]) + m_ackQ->Peek()->GetSize() <= thresholds[1]
-		){
+			
+			// m_ackQ->GetNPackets() > 0 && 
+			// credit >= m_ackQ->Peek()->GetSize()
+		)
+	{
 		return -1;
 	}
 
@@ -108,8 +114,10 @@ int RdmaEgressQueue::GetNextQindex(uint32_t credit, uint32_t inflight[], uint32_
 			if (m_qpGrp->Get(idx)->m_nextAvail.GetTimeStep() > Simulator::Now().GetTimeStep()) //not available now
 				continue;
 			uint32_t pkt_size = (qp->GetBytesLeft() > m_mtu ? m_mtu : qp->GetBytesLeft()) + CustomHeader::GetStaticWholeHeaderSize();
-			// if( credit < pkt_size || (thresholds[qp->m_pg] <= pkt_size + inflight[qp->m_pg]) ) // no enough credits
-			if(thresholds[qp->m_pg] <= uint64_t(pkt_size) + inflight[qp->m_pg])
+			if( 
+				credit < pkt_size || (thresholds[qp->m_pg] <= pkt_size + inflight[qp->m_pg])
+				// credit < pkt_size
+			) // no enough credits
 				continue;
 			res = idx;
 			break;
@@ -222,6 +230,7 @@ QbbNetDevice::QbbNetDevice()
 	m_rdmaEQ = CreateObject<RdmaEgressQueue>();
 	m_rdmaEQ->qb_dev = this;
 	perpt_fctbs = 0;
+	perpt_fccl = 0;
 	for(int i = 0; i < qCnt; i++){
 		perpq_accumu_drained_bytes[i] = 0;
 		perpq_accumu_recycled_credit[i] = 0;
@@ -446,22 +455,35 @@ QbbNetDevice::DequeueAndTransmit(void)
 			m_snifferTrace(p);
 			m_promiscSnifferTrace(p);
 			
-			CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-			p->PeekHeader(ch);
-			
-			InterfaceTag t;
 			uint32_t qIndex = m_queue->GetLastQueue();
-			if(qIndex != 0) {// is not fcp
+
+			CustomHeader ch(CustomHeader::L2_Header |
+							CustomHeader::L3_Header |
+							CustomHeader::L4_Header);
+
+			// 队列 0 包含 FCP 和心跳，不按普通 IP/UDP 报文解析。
+			if (qIndex != 0)
+			{
+				p->PeekHeader(ch);
+
 				m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
+
+				InterfaceTag t;
 				p->RemovePacketTag(t);
 			}
-			
+
 			m_traceDequeue(p, qIndex);
-			
+
 			TransmitStart(p);
 			totalBytesSent += p->GetSize();
-			if (m_txBytesPerFlow.find(ch.udp.dport) != m_txBytesPerFlow.end()) {
-    			m_txBytesPerFlow[ch.udp.dport] += p->GetSize();
+
+			if (qIndex != 0)
+			{
+				auto it = m_txBytesPerFlow.find(ch.udp.dport);
+				if (it != m_txBytesPerFlow.end())
+				{
+					it->second += p->GetSize();
+				}
 			}
 		}
 	}
@@ -500,8 +522,13 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 	uint16_t pppProto = ph.GetProtocol();
 	CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 	ch.getInt = 1; // parse INT header
-	
-	if(pppProto == 0x0086) {
+	if (pppProto == HEARTBEAT_REQUEST_PROTOCOL ||
+		pppProto == HEARTBEAT_REPLY_PROTOCOL)
+	{
+		ReceiveHeartbeat(packet, pppProto);
+		return;
+	}
+	else if(pppProto == 0x0086) {
 		if (m_node->GetNodeType() > 0) {
 			
 			DynamicCast<SwitchNode>(m_node)->SwitchReceiveFcp(packet, m_ifIndex);
@@ -515,8 +542,6 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 			uint32_t fccl = fh.GetFccl();
 			uint32_t fccr = fh.GetFccr();
 			uint32_t qlen = fh.GetQlen();
-			uint32_t step = fh.GetStep();
-			// std::cout << "receive step " << step << std::endl;
 			bool tap = fh.GetTap();
 			perpt_fccl = fccl;
 			perpq_accumu_recycled_credit[qIndex] = fccr;
@@ -533,7 +558,7 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 					need_set_tap[qIndex] = true;
 				}
 				else if(qlen <= qlen_min && perpg_inflight_threshold[qIndex] != maxThreshold){
-					new_threshold = perpg_inflight_threshold[qIndex] + std::min(qlen_min - qlen, step);// sgh 10/18
+					new_threshold = perpg_inflight_threshold[qIndex] + qlen_min - qlen;
 					perpg_inflight_threshold[qIndex] = new_threshold > maxThreshold ? maxThreshold : new_threshold;
 					rate_adjusting[qIndex] = true;
             		need_set_tap[qIndex] = true;
@@ -575,11 +600,9 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
             bool tap = ((ch.m_tos & 0x03) == 0x03);
 			perpq_accumu_drained_bytes[vl] += packet->GetSize();
 			fcph.SetVl(vl);
-			fcph.SetFccl(0x0fffffff);
+			fcph.SetFccl(0x7fffffff);
 			fcph.SetQlen(0);
 			fcph.SetFccr(perpq_accumu_drained_bytes[vl]);
-			fcph.SetStep(m_step[vl]);// sgh 10/18
-			// std::cout << "send step " << m_step[vl] << std::endl;
 			Ptr<Packet> fcp = Create<Packet> (0);
 		
 			if(tap){
@@ -721,6 +744,246 @@ void QbbNetDevice::SetQlenMax(u_int32_t value){
 
 void QbbNetDevice::SetQlenMin(u_int32_t value){
 	qlen_min = value;
+}
+bool
+QbbNetDevice::HasEgressBytesSend() const // 判断egress是否还有数据需要发送
+{
+    if (m_node->GetNodeType() > 0) //交换机
+    {
+        Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
+        return sw->m_mmu->egress_bytes_pt[m_ifIndex] != 0;
+    }
+	else{// 网卡没有 SwitchMmu：
+		// 使用 ACK 排队字节数 + 各 QP 尚未发送的负载字节数。
+		// 不包含 FCP/心跳控制队列，避免心跳自己影响有无数据的判断。
+		uint64_t bytes = m_rdmaEQ->m_ackQ->GetNBytes();
+
+		if (m_rdmaEQ->m_qpGrp)
+		{
+			for (uint32_t i = 0;
+				i < m_rdmaEQ->m_qpGrp->GetN();
+				++i)
+			{
+				bytes += m_rdmaEQ->m_qpGrp->Get(i)->GetBytesLeft();
+			}
+		}
+		return bytes != 0;
+	}
+}
+
+uint32_t QbbNetDevice::GetHeartbeatAvailableCredit() const // 为心跳包获取可用credit
+{
+    uint32_t fccl;
+    uint32_t fctbs;
+
+    if (m_node->GetNodeType() > 0)
+    {
+        Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
+        fccl = sw->m_mmu->fccl[m_ifIndex];
+        fctbs = sw->m_mmu->fctbs[m_ifIndex];
+    }
+    else
+    {
+        fccl = perpt_fccl;
+        fctbs = perpt_fctbs;
+    }
+
+    return fccl - fctbs;
+}
+
+uint32_t QbbNetDevice::GetHeartbeatReplyFccl() const // 获取心跳包回复的fccl
+{
+    if (m_node->GetNodeType() > 0)
+    {
+        Ptr<SwitchNode> sw =
+            DynamicCast<SwitchNode>(m_node);
+
+        return sw->m_mmu->GetAdvertisedFccl(m_ifIndex);
+    }
+	else{
+
+		// 沿用现有 NIC 返回普通 FCP 时的设置。
+		return 0x7fffffff;
+	}
+}
+
+void QbbNetDevice::EnqueueHeartbeat(Ptr<Packet> packet,
+                                    uint16_t protocol) //将心跳包加入队列，pkt是心跳包，proto是表示心跳包方向
+{
+    if (!IsLinkUp())
+    {
+        return;
+    }
+
+    PppHeader ph;
+    ph.SetProtocol(protocol);
+    packet->AddHeader(ph);
+
+    if (m_node->GetNodeType() > 0)
+    {
+        // 交换机端口：共用 FCP 优先级队列 0。
+        m_traceEnqueue(packet, 0);
+        m_queue->Enqueue(packet, 0);
+    }
+    else
+    {
+        // 网卡：共用 RDMA 的 FCP 队列。
+        RdmaEnqueueFcpQ(packet);
+    }
+
+    DequeueAndTransmit();
+}
+
+void QbbNetDevice::StartHeartbeat() //初始启动心跳包循环
+{
+    // 防止重复启动，产生额外的循环。
+    if (m_heartbeatStarted || !IsLinkUp())
+    {
+        return;
+    }
+
+    m_heartbeatStarted = true;
+    SendHeartbeat();
+}
+
+void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
+{
+    if (!m_heartbeatStarted || !IsLinkUp())
+    {
+        return;
+    }
+
+    const bool hasData = HasEgressBytesSend();
+	bool hasRecycled = false;
+	HeartbeatHeader h;
+	uint32_t parked_credit = GetHeartbeatAvailableCredit();
+
+	
+    if (!hasData)//没有数据需要发送的时候，可能需要消耗credit，因此改变fctbs
+    {	
+        if (m_node->GetNodeType() > 0)//交换机
+        {
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
+			if(sw->m_mmu->fctbs[m_ifIndex] + m_idleReturnBytes <= sw->m_mmu->fccl[m_ifIndex]){
+            	sw->m_mmu->fctbs[m_ifIndex] += m_idleReturnBytes;
+				parked_credit -= m_idleReturnBytes;
+				hasRecycled = true;
+			}
+        }
+        else
+        {	if(perpt_fctbs + m_idleReturnBytes <= perpt_fccl){
+            	perpt_fctbs += m_idleReturnBytes;
+				parked_credit -= m_idleReturnBytes;
+				hasRecycled = true;
+			}
+        }
+    }
+    h.SetCredit(parked_credit); // 在更新 fctbs 后计算
+    h.SetHasRecycled(hasRecycled);
+    h.SetFccl(0); // 请求方向无效。
+
+    Ptr<Packet> packet = Create<Packet>(0);
+    packet->AddHeader(h);
+
+    EnqueueHeartbeat(packet, HEARTBEAT_REQUEST_PROTOCOL);
+	// std::cout
+    //         << "Time " << Simulator::Now().GetNanoSeconds()
+    //         << " send keep live "
+    //         << " node " << m_node->GetId()
+    //         << " port " << m_ifIndex
+    //         << " has_pending_data " << h.GetHasRecycled()
+    //         << " parked_credit " << parked_credit
+    //         << std::endl;
+}
+
+void QbbNetDevice::SetIdleReturnBytes(uint32_t bytes) //初始化
+{
+    m_idleReturnBytes = bytes;
+}
+
+void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
+                                    uint16_t protocol) //接收到心跳包后返回fccl或者是接收心跳reply包更新fccl并再启动循环
+{
+    // packet 此时仍带 PPP 头。
+    PppHeader ph;
+    packet->RemoveHeader(ph);
+
+    if (packet->GetSize() < HeartbeatHeader::GetHeaderSize())
+    {
+        return;
+    }
+
+    HeartbeatHeader h;
+    packet->RemoveHeader(h);
+
+    if (protocol == HEARTBEAT_REQUEST_PROTOCOL) //如果收到了来自上游的心跳包
+    {
+        // std::cout
+        //     << "Time " << Simulator::Now().GetNanoSeconds()
+        //     << " HEARTBEAT_REQUEST_RX"
+        //     << " node " << m_node->GetId()
+        //     << " port " << m_ifIndex
+        //     << " has_pending_data " << h.GetHasRecycled
+        //     << " parked_credit " << h.GetCredit()
+        //     << std::endl;
+		if (h.GetHasRecycled() &&
+            m_node->GetNodeType() > 0)
+        {
+            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
+            // 上游已扣减 fctbs；计数异常时不能静默跳过下游更新。
+            sw->m_mmu->abr[m_ifIndex] += m_idleReturnBytes;
+            sw->m_mmu->granted_credit[m_ifIndex] -= m_idleReturnBytes;
+            sw->m_mmu->credit_pool += m_idleReturnBytes;
+            // 与 GrantCredit() 中的端口容量镜像保持一致。
+            sw->m_mmu->buffer_size[m_ifIndex] =
+                sw->m_mmu->granted_credit[m_ifIndex];
+        }
+        HeartbeatHeader reply;
+        reply.SetHasRecycled(false); 
+        reply.SetCredit(0);     
+        reply.SetFccl(GetHeartbeatReplyFccl());
+
+        Ptr<Packet> response = Create<Packet>(0);
+        response->AddHeader(reply);
+
+        EnqueueHeartbeat(response, HEARTBEAT_REPLY_PROTOCOL);
+        return;
+    }
+
+    if (protocol == HEARTBEAT_REPLY_PROTOCOL) //如果是上游收到下游的心跳包
+    {
+		uint32_t receivedFccl = h.GetFccl();
+		
+		if (m_node->GetNodeType() > 0)
+		{
+			Ptr<SwitchNode> sw =
+				DynamicCast<SwitchNode>(m_node);
+
+			sw->m_mmu->fccl[m_ifIndex] = receivedFccl;
+			std::cout << "sw receive fccl " << receivedFccl;
+		}
+		else
+		{
+			std::cout << "host receive fccl " << receivedFccl;
+			perpt_fccl = receivedFccl;
+		}
+		uint32_t parked_credit = GetHeartbeatAvailableCredit();
+		// 新额度可能使数据包满足发送条件。
+		DequeueAndTransmit();
+        // std::cout
+        //     << "Time " << Simulator::Now().GetNanoSeconds()
+        //     << " rx keep live reply"
+			
+        //     << " node " << m_node->GetId()
+        //     << " port " << m_ifIndex
+        //     << " parked_credit " << parked_credit
+        //     << std::endl;
+
+        // 每个回复触发下一次请求，形成持续循环。
+        if (m_heartbeatStarted && IsLinkUp()){
+            SendHeartbeat();
+        }
+    }
 }
 
 void QbbNetDevice::UpdateNextAvail(Time t) {

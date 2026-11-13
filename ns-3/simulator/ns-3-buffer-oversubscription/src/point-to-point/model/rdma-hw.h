@@ -1,8 +1,6 @@
 #ifndef RDMA_HW_H
 #define RDMA_HW_H
 
-#define NS3_RDMA_RETRANSMISSION_RECOVERY 1
-
 // #include <ns3/rdma.h>
 #include <ns3/rdma-queue-pair.h>
 #include <ns3/node.h>
@@ -71,8 +69,6 @@ public:
 	static uint16_t EtherToPpp (uint16_t protocol);
 
 	void RecoverQueue(Ptr<RdmaQueuePair> qp);
-	void ArmRetransmissionTimer(Ptr<RdmaQueuePair> qp);
-	void RetransmissionTimeout(Ptr<RdmaQueuePair> qp);
 	void QpComplete(Ptr<RdmaQueuePair> qp);
 	void SetLinkDown(Ptr<QbbNetDevice> dev);
 
@@ -162,13 +158,6 @@ public:
 	void SetPintSmplThresh(double p);
 	void HandleAckHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
 	void UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, bool fast_react);
-
-	Time m_initialRto;
-	Time m_maxRto;
-	uint64_t m_rtoCount = 0;
-	uint64_t m_retransmittedPackets = 0;
-	// A completed receive sequence must survive late duplicate data packets.
-	std::unordered_map<uint64_t, uint32_t> m_completedRxSeq;
 };
 
 } /* namespace ns3 */

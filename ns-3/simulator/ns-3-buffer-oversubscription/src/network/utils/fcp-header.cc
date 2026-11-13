@@ -12,8 +12,12 @@ namespace ns3 {
 
 NS_OBJECT_ENSURE_REGISTERED (FcpHeader);
 
-FcpHeader::FcpHeader ()
-  : m_vl (0)
+FcpHeader::FcpHeader()
+    : m_vl(0),
+      m_flags(0),
+      m_qlen(0),
+      m_fccl(0),
+      m_fccr(0)
 {
 }
 FcpHeader::~FcpHeader ()
@@ -63,12 +67,6 @@ FcpHeader::SetTap ()
 }
 
 void
-FcpHeader::SetStep (uint32_t step)
-{
-  m_step = step;
-}
-
-void
 FcpHeader::ResetTap ()
 {
   m_flags = 0x0000;
@@ -104,11 +102,6 @@ FcpHeader::GetFccr (void)
   return m_fccr;
 }
 
-uint32_t
-FcpHeader::GetStep (void)
-{
-  return m_step;
-}
 void
 FcpHeader::Print (std::ostream &os) const
 {
@@ -122,7 +115,7 @@ FcpHeader::GetSerializedSize (void) const
   return GetHeaderSize();
 }
 uint32_t FcpHeader::GetHeaderSize(void){
-  return 4 + 4 + 4 + 4 + 4; 
+  return 4 + 4 + 4 + 4; 
 }
 
 void
@@ -134,7 +127,6 @@ FcpHeader::Serialize (Buffer::Iterator start) const
   i.WriteHtonU32 (m_qlen);
   i.WriteHtonU32 (m_fccl);
   i.WriteHtonU32 (m_fccr);
-  i.WriteHtonU32 (m_step);
 }
 uint32_t
 FcpHeader::Deserialize (Buffer::Iterator start)
@@ -145,7 +137,6 @@ FcpHeader::Deserialize (Buffer::Iterator start)
   m_qlen =  i.ReadNtohU32 ();
   m_fccl = i.ReadNtohU32 ();
   m_fccr = i.ReadNtohU32 ();
-  m_step = i.ReadNtohU32 ();
   return GetSerializedSize ();
 }
 

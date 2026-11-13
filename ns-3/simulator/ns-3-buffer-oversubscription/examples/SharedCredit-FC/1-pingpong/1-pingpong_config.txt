@@ -9,7 +9,7 @@ TRACE_OUTPUT_FILE examples/SharedCredit-FC/1-pingpong/monitor_output/mix.tr
 FCT_OUTPUT_FILE examples/SharedCredit-FC/1-pingpong/monitor_output/fct.txt
 PFC_OUTPUT_FILE examples/SharedCredit-FC/1-pingpong/monitor_output/pfc.txt
 
-SIMULATOR_STOP_TIME 2
+SIMULATOR_STOP_TIME 0.0001
 
 CC_MODE 0
 ALPHA_RESUME_INTERVAL 1

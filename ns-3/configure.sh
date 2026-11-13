@@ -12,6 +12,7 @@ NS3_DIRS=(
     ns-3-infiniflow-nothreshold
     ns-3-roce
     ns-3-xpass
+    ns-3-buffer-oversubscription
 )
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

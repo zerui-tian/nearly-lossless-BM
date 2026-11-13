@@ -5,7 +5,7 @@ CONFIG_FILE="$SCRIPT_DIR/../config.sh"
 source $CONFIG_FILE
 
 configFile=$EXAMPLE_DIR/1-pingpong/1-pingpong_config.txt
-outputFile=$OUTPUT/1-pingpong/1-pingpong.out
+outputFile=$EXAMPLE_DIR/1-pingpong/monitor_output/1-pingpong.out
 FLOWTHROUGHPUT_PATH="$OUTPUT/1-pingpong/flowthroughput.txt"
 
 mkdir -p $OUTPUT/1-pingpong

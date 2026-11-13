@@ -7,6 +7,8 @@
 #include "switch-mmu.h"
 #include "pint.h"
 #include "ns3/global-config.h"
+#include <vector>
+#include "ns3/nstime.h"
 
 namespace ns3 {
 
@@ -27,6 +29,7 @@ class SwitchNode : public Node{
 	uint32_t m_lastPktSize[pCnt];
 	uint64_t m_lastPktTs[pCnt]; // ns
 	double m_u[pCnt];
+	uint32_t rr_cred_dis_ptr = 0;
 
 protected:
 	bool m_ecnEnabled;
@@ -38,6 +41,15 @@ protected:
 	bool PowerEnabled;
 
 private:
+	std::vector<uint32_t> m_creditPorts;
+
+	uint32_t m_creditGrantBytes = 0; //每次发牌大小
+	Time m_creditGrantInterval;	//每轮发牌的间隔
+
+	bool m_creditDistributionStarted = false; //不能重复发牌
+
+	void DistributeCredit(); //发牌核心函数
+	
 	int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
 	void SendToDev(Ptr<Packet>p, CustomHeader &ch);
 	static uint32_t EcmpHash(const uint8_t* key, size_t len, uint32_t seed);
@@ -56,6 +68,8 @@ public:
 	// for approximate calc in PINT
 	int logres_shift(int b, int l);
 	int log2apprx(int x, int b, int m, int l); // given x of at most b bits, use most significant m bits of x, calc the result in l bits
+	void StartCreditDistribution(uint32_t grantBytes,
+                             Time interval); //开始触发发牌
 };
 
 } /* namespace ns3 */

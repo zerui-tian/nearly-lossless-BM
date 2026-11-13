@@ -95,6 +95,13 @@ uint32_t p_queue_count = 8;
 float qmin = 3;
 float qmax = 6;
 
+// 示例值，按实验需求配置。
+uint32_t credit_grant_bytes = 1048;
+uint64_t credit_grant_interval_ns = credit_grant_bytes * 8 / 100;
+
+// 每次主动归还的额度，可独立修改。
+uint32_t idle_return_bytes = 1048;
+
 unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
 unordered_map<uint64_t, double> rate2pmax;
 
@@ -1230,10 +1237,12 @@ int main(int argc, char *argv[])
 	
 	nic_rate = get_nic_rate(n);
 	uint32_t packet_size = packet_payload_size + CustomHeader::GetStaticWholeHeaderSize();
-	uint32_t step_bytes = packet_size * 1;
+	credit_grant_bytes = packet_size;
+	std::cout << "packet_size : " << packet_size << std::endl;
+	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = SwitchMmu::pCnt * (2 * 100 * 3000 * 2 / 8);
+	buffer_size = SwitchMmu::pCnt * (0.7 * 100 * 1000 * 2 / 8);
 	uint32_t per_port_buffer = buffer_size / SwitchMmu::pCnt;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch
@@ -1254,7 +1263,7 @@ int main(int argc, char *argv[])
 					sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
 					sw->m_mmu->maxThreshold = per_port_buffer;
 					sw->m_mmu->SetInflightThreshold(j, qu, packet_size * 2);
-					sw->m_mmu->step[j][qu] = step_bytes;
+					// sw->m_mmu->step[j][qu] = step_bytes;
 				}
 			}
 			sw->m_mmu->SetQlenMax(qmax*packet_size);
@@ -1314,8 +1323,8 @@ int main(int argc, char *argv[])
 				Ptr<QbbNetDevice> dev = rdmaHw->m_nic[j].dev;
 				if (dev == NULL)
 					continue;
-				dev->perpt_fccl = per_port_buffer;
-				dev->m_rdmaEQ->m_mtu = packet_payload_size;
+				dev->perpt_fccl = 0;
+				dev->m_rdmaEQ->m_mtu = packet_size;
 				dev->SetQlenMax(qmax*packet_size);
 				dev->SetQlenMin(qmin*packet_size);
 				// dev->SetAiStep(packet_size / 2);
@@ -1327,7 +1336,7 @@ int main(int argc, char *argv[])
 				dev->maxThreshold = per_port_buffer;
 				for(int qu = 0; qu < QbbNetDevice::qCnt; qu++){
 					dev->perpg_inflight_threshold[qu] = packet_size * 2;//sgh 10/18
-					dev->m_step[qu] = step_bytes;
+					// dev->m_step[qu] = step_bytes;
 				}
 			}
 		}
@@ -1418,6 +1427,40 @@ int main(int argc, char *argv[])
 	std::cout << "Running Simulation.\n";
 	NS_LOG_INFO("Run Simulation.");
 	Simulator::Stop(Seconds(simulator_stop_time));
+	// 启动每台交换机的发牌器。
+	for (uint32_t i = 0; i < n.GetN(); ++i)
+	{
+		Ptr<SwitchNode> sw =
+			DynamicCast<SwitchNode>(n.Get(i));
+
+		if (!sw)
+		{
+			continue;
+		}
+
+		sw->StartCreditDistribution(
+			credit_grant_bytes,
+			NanoSeconds(credit_grant_interval_ns));
+	}
+	for (uint32_t i = 0; i < n.GetN(); ++i)
+	{
+		Ptr<Node> node = n.Get(i);
+
+		for (uint32_t j = 0; j < node->GetNDevices(); ++j)
+		{
+			Ptr<QbbNetDevice> dev =
+				DynamicCast<QbbNetDevice>(node->GetDevice(j));
+
+			if (!dev || !dev->IsLinkUp())
+			{
+				continue;
+			}
+			dev->SetIdleReturnBytes(idle_return_bytes);
+			Simulator::ScheduleNow(
+				&QbbNetDevice::StartHeartbeat,
+				dev);
+		}
+	}
 	Simulator::Run();
 	Simulator::Destroy();
 	NS_LOG_INFO("Done.");

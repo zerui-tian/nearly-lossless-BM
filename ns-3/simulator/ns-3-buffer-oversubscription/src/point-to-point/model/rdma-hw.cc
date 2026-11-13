@@ -21,16 +21,6 @@ TypeId RdmaHw::GetTypeId (void)
 {
 	static TypeId tid = TypeId ("ns3::RdmaHw")
 	                    .SetParent<Object> ()
-	                    .AddAttribute("RetransmissionTimeout",
-	                                  "Initial timeout for unacknowledged data; reset on ACK progress",
-	                                  TimeValue(MilliSeconds(1)),
-	                                  MakeTimeAccessor(&RdmaHw::m_initialRto),
-	                                  MakeTimeChecker(MicroSeconds(1)))
-	                    .AddAttribute("MaxRetransmissionTimeout",
-	                                  "Maximum timeout after exponential backoff",
-	                                  TimeValue(MilliSeconds(100)),
-	                                  MakeTimeAccessor(&RdmaHw::m_maxRto),
-	                                  MakeTimeChecker(MicroSeconds(1)))
 	                    .AddAttribute("MinRate",
 	                                  "Minimum rate of a throttled flow",
 	                                  DataRateValue(DataRate("100Mb/s")),
@@ -244,7 +234,6 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 	qp->SetVarWin(m_var_win);
 	qp->SetAppNotifyCallback(notifyAppFinish);
 	qp->stopTime = stopTime;
-	qp->m_retransmitTimeout = m_initialRto;
 
 	if (stopTime == Simulator::GetMaximumSimulationTime()-MicroSeconds(1)){
 		qp->incastFlow = 1;
@@ -292,7 +281,6 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 }
 
 void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp) {
-	Simulator::Cancel(qp->m_retransmitEvent);
 	// remove qp from the m_qpMap
 	uint64_t key = GetQpKey(qp->dip.Get(), qp->sport, qp->m_pg);
 	m_qpMap.erase(key);
@@ -312,9 +300,6 @@ Ptr<RdmaRxQueuePair> RdmaHw::GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport,
 		q->sport = sport;
 		q->dport = dport;
 		q->m_ecn_source.qIndex = pg;
-		auto completed = m_completedRxSeq.find(key);
-		if (completed != m_completedRxSeq.end())
-			q->ReceiverNextExpectedSeq = completed->second;
 		// store in map
 		m_rxQpMap[key] = q;
 		return q;
@@ -331,11 +316,6 @@ uint32_t RdmaHw::GetNicIdxOfRxQp(Ptr<RdmaRxQueuePair> q) {
 }
 void RdmaHw::DeleteRxQp(uint32_t dip, uint16_t pg, uint16_t dport) {
 	uint64_t key = ((uint64_t)dip << 32) | ((uint64_t)pg << 16) | (uint64_t)dport;
-	auto it = m_rxQpMap.find(key);
-	if (it != m_rxQpMap.end()) {
-		m_completedRxSeq[key] = it->second->ReceiverNextExpectedSeq;
-		Simulator::Cancel(it->second->QcnTimerEvent);
-	}
 	m_rxQpMap.erase(key);
 }
 
@@ -440,12 +420,9 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 	int i;
 	Ptr<RdmaQueuePair> qp = GetQp(ch.sip, port, qIndex);
 	if (qp == NULL) {
-		// ACKs/NACKs for retransmissions can arrive after the QP completed.
+		std::cout << "ERROR: " << "node:" << m_node->GetId() << ' ' << (ch.l3Prot == 0xFC ? "ACK" : "NACK") << " NIC cannot find the flow\n";
 		return 0;
 	}
-	if (seq > qp->m_highestSent || seq > qp->m_size)
-		return 0;
-	uint64_t previousUna = qp->snd_una;
 
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
 	Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
@@ -460,18 +437,9 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 		}
 		if (qp->IsFinished()) {
 			QpComplete(qp);
-			dev->TriggerTransmit();
-			return 0;
 		}
 	}
-	// A delayed ACK can overtake the current go-back-N retransmit cursor.
-	qp->snd_nxt = std::max(qp->snd_nxt, qp->snd_una);
-	if (qp->snd_una > previousUna) {
-		qp->m_retransmitTimeout = m_initialRto;
-		Simulator::Cancel(qp->m_retransmitEvent);
-		ArmRetransmissionTimer(qp);
-	}
-	if (ch.l3Prot == 0xFD && seq >= qp->snd_una && seq < qp->m_highestSent)
+	if (ch.l3Prot == 0xFD) // NACK
 		RecoverQueue(qp);
 
 	// handle cnp
@@ -535,8 +503,8 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 		} else
 			return 4;
 	} else {
-		// The previous ACK may have been lost. Repeat the cumulative ACK.
-		return 1;
+		// Duplicate.
+		return 3;
 	}
 }
 void RdmaHw::AddHeader (Ptr<Packet> p, uint16_t protocolNumber) {
@@ -558,32 +526,7 @@ void RdmaHw::RecoverQueue(Ptr<RdmaQueuePair> qp) {
 	qp->snd_nxt = qp->snd_una;
 }
 
-void RdmaHw::ArmRetransmissionTimer(Ptr<RdmaQueuePair> qp) {
-	if (m_ack_interval != 0 && qp->snd_una < qp->m_highestSent &&
-		!qp->m_retransmitEvent.IsRunning()) {
-		qp->m_retransmitEvent = Simulator::Schedule(
-			qp->m_retransmitTimeout, &RdmaHw::RetransmissionTimeout, this, qp);
-	}
-}
-
-void RdmaHw::RetransmissionTimeout(Ptr<RdmaQueuePair> qp) {
-	if (GetQp(qp->dip.Get(), qp->sport, qp->m_pg) != qp ||
-		qp->snd_una >= qp->m_size || qp->snd_una >= qp->m_highestSent)
-		return;
-	++qp->m_rtoCount;
-	++m_rtoCount;
-	qp->m_retransmitTimeout = std::min(
-		qp->m_retransmitTimeout * 2, std::max(m_maxRto, m_initialRto));
-	RecoverQueue(qp);
-	// Retransmissions use the normal scheduler and its existing VC credits.
-	m_nic[GetNicIdxOfQp(qp)].dev->TriggerTransmit();
-	ArmRetransmissionTimer(qp);
-}
-
 void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp) {
-	if (GetQp(qp->dip.Get(), qp->sport, qp->m_pg) != qp)
-		return;
-	Simulator::Cancel(qp->m_retransmitEvent);
 	NS_ASSERT(!m_qpCompleteCallback.IsNull());
 	if (m_cc_mode == 1) {
 		Simulator::Cancel(qp->mlx.m_eventUpdateAlpha);
@@ -664,13 +607,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
 	p->AddHeader (ppp);
 
 	// update state
-	if (qp->snd_nxt < qp->m_highestSent) {
-		++qp->m_retransmittedPackets;
-		++m_retransmittedPackets;
-	}
 	qp->snd_nxt += payload_size;
-	qp->m_highestSent = std::max(qp->m_highestSent, qp->snd_nxt);
-	ArmRetransmissionTimer(qp);
 	qp->m_ipid++;
 	// return
 	qp->numTxBytes = qp->numTxBytes + p->GetSize();

@@ -112,8 +112,8 @@ namespace ns3 {
 		else if (m_queues[1]->GetNPackets() > 0) //1 is the ACK priority
 		{
 			uint32_t pkt_len = m_queues[1]->Peek()->GetSize();
-			// if (credit >= pkt_len && thresholds[1] >= (pkt_len + inflight[1])){
-			if (thresholds[1] >= (pkt_len + inflight[1])){
+			if (credit >= pkt_len && thresholds[1] >= (pkt_len + inflight[1])){
+			// if (thresholds[1] >= (pkt_len + inflight[1])){
 				found = true;
 				qIndex = 1;
 			}
@@ -126,8 +126,8 @@ namespace ns3 {
 				if(m_queues[cur_q_index]->GetNPackets() > 0){
 
 					uint32_t pkt_len = m_queues[cur_q_index]->Peek()->GetSize();
-					// if (credit >= pkt_len && thresholds[cur_q_index] > (pkt_len + inflight[cur_q_index]))  //round robin
-					if (thresholds[cur_q_index] > (pkt_len + inflight[cur_q_index]))  //round robin
+					if (credit >= pkt_len && thresholds[cur_q_index] > (pkt_len + inflight[cur_q_index]))  //round robin
+					// if (thresholds[cur_q_index] > (pkt_len + inflight[cur_q_index]))  //round robin
 					{
 						found = true;
 						break;

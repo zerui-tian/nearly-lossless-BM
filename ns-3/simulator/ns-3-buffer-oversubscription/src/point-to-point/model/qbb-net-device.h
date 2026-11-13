@@ -76,8 +76,16 @@ public:
 class QbbNetDevice : public PointToPointNetDevice 
 {
 public:
+  void SetIdleReturnBytes(uint32_t bytes);
+  uint32_t m_idleReturnBytes = 1048;//配置空闲情况心跳包回收的credit大小
   uint32_t packetBytes;
   static const uint32_t qCnt = Q_CNT;	// Number of queues/priorities used
+  enum HeartbeatProtocol : uint16_t
+  {
+      HEARTBEAT_REQUEST_PROTOCOL = 0x0088,
+      HEARTBEAT_REPLY_PROTOCOL   = 0x0089
+  }; // 用于区分心跳包和reply包的协议号
+
   std::unordered_map<uint32_t, uint64_t> m_txBytesPerFlow;
   static TypeId GetTypeId (void);
 
@@ -191,14 +199,27 @@ public:
   bool need_ret_tap[qCnt];
   bool rate_adjusting[qCnt];
 
-  uint32_t m_step[qCnt]; // the step for each queue
-
   void SetInflightThreshold(uint32_t qIndex, uint32_t threshold);
 	void SetQlenMax(u_int32_t value);
 	void SetQlenMin(u_int32_t value);
 
   uint32_t qlen_max;
   uint32_t qlen_min;
+
+  void StartHeartbeat();
+  void SendHeartbeat();
+  
+  void ReceiveHeartbeat(Ptr<Packet> packet,
+                        uint16_t protocol);
+  bool m_heartbeatStarted = false; //用于防止重复启动心跳包
+
+  //获取心跳包传递的信息
+  bool HasEgressBytesSend() const;
+  uint32_t GetHeartbeatAvailableCredit() const;
+  uint32_t GetHeartbeatReplyFccl() const;
+
+  void EnqueueHeartbeat(Ptr<Packet> packet,
+                        uint16_t protocol);
 protected:
 
 	//Ptr<Node> m_node;
