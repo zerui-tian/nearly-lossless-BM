@@ -117,8 +117,10 @@ int RdmaEgressQueue::GetNextQindex(uint32_t credit, uint32_t inflight[], uint32_
 			if( 
 				credit < pkt_size || (thresholds[qp->m_pg] <= pkt_size + inflight[qp->m_pg])
 				// credit < pkt_size
-			) // no enough credits
+			){ // no enough credits
+				// std::cout << "Out of credit" << std::endl;
 				continue;
+			}
 			res = idx;
 			break;
 		}
@@ -240,7 +242,7 @@ QbbNetDevice::QbbNetDevice()
 	memset(need_set_tap, 0, sizeof(need_set_tap));
 	memset(need_ret_tap, 0, sizeof(need_ret_tap));
 	memset(rate_adjusting, 0, sizeof(rate_adjusting));
-	
+	perpt_parked_credit = 0;
 }
 
 QbbNetDevice::~QbbNetDevice()
@@ -350,6 +352,17 @@ QbbNetDevice::DequeueAndTransmit(void)
 				totalBytesSent += p->GetSize();
 				perpt_fctbs += p->GetSize(); // update fctbs
 				perpq_accumu_used_credit[1] += p->GetSize();
+				#if OUTPUT_1
+				std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+					<< " node " << m_node->GetId()
+					<< " port " << GetIfIndex() << " qIndex 1"
+					<< " device " << this << " event HOST_ACK_SEND"
+					<< " perpt_fccl " << perpt_fccl
+					<< " perpt_fctbs " << perpt_fctbs
+					<< " perpt_parked_credit " << perpt_parked_credit
+					<< " inflight " << perpq_accumu_used_credit[1] - perpq_accumu_recycled_credit[1]
+					<< std::endl;
+				#endif
 				if(need_set_tap[1]){
 					PppHeader ppp;
 					Ipv4Header h;
@@ -386,6 +399,19 @@ QbbNetDevice::DequeueAndTransmit(void)
 				totalBytesSent += p->GetSize();
 				perpt_fctbs += p->GetSize();
 				perpq_accumu_used_credit[lastQp->m_pg] += p->GetSize();
+				#if OUTPUT_1
+				std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+					<< " node " << m_node->GetId()
+					<< " port " << GetIfIndex() << " qIndex " << lastQp->m_pg
+					<< " device " << this << " event HOST_DATA_SEND"
+					<< " perpt_fccl " << perpt_fccl
+					<< " perpt_fctbs " << perpt_fctbs
+					<< " perpt_parked_credit " << perpt_parked_credit
+					<< " perpq_accumu_used_credit " << perpq_accumu_used_credit[lastQp->m_pg]
+					<< " perpq_accumu_recycled_credit " << perpq_accumu_recycled_credit[lastQp->m_pg]
+					<< " inflight " << perpq_accumu_used_credit[lastQp->m_pg] - perpq_accumu_recycled_credit[lastQp->m_pg]
+					<< std::endl;
+				#endif
 				if(need_set_tap[lastQp->m_pg]){
 					PppHeader ppp;
 					Ipv4Header h;
@@ -413,15 +439,6 @@ QbbNetDevice::DequeueAndTransmit(void)
 				if (m_txBytesPerFlow.find(lastQp->dport) != m_txBytesPerFlow.end()) {
     				m_txBytesPerFlow[lastQp->dport] += p->GetSize();
 				}
-				#if OUTPUT_1
-				std::cout << "Time " << Simulator::Now().GetNanoSeconds() << " fccl " << perpt_fccl <<
-				 " fctbs " << perpt_fctbs <<
-				 " perpq_accumu_used_credit " << perpq_accumu_used_credit[lastQp->m_pg] << 
-				 " perpq_accumu_recycled_credit " << perpq_accumu_recycled_credit[lastQp->m_pg] <<
-                 " inflight " << perpq_accumu_used_credit[lastQp->m_pg] - perpq_accumu_recycled_credit[lastQp->m_pg]
-				 << " node " << m_node->GetId() 
-				 << " port " << GetIfIndex() << " qIndex " << lastQp->m_pg <<  std::endl;
-				#endif
 			}
 		}
 	}
@@ -545,6 +562,17 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 			bool tap = fh.GetTap();
 			perpt_fccl = fccl;
 			perpq_accumu_recycled_credit[qIndex] = fccr;
+			#if OUTPUT_1
+			std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+				<< " node " << m_node->GetId()
+				<< " port " << GetIfIndex() 
+				<<" qIndex " << qIndex
+				<< " event HOST_FCP_RECEIVE"
+				<< " perpt_fccl " << perpt_fccl
+				<< " perpt_fctbs " << perpt_fctbs
+				<< " perpt_parked_credit " << perpt_parked_credit
+				<< std::endl;
+			#endif
 			if(tap){
 				rate_adjusting[qIndex] = false;
 			}
@@ -566,18 +594,12 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 			}
 			#if OUTPUT_1
 			std::cout << "Time " << Simulator::Now().GetNanoSeconds() 
-					 << " threshold " << perpg_inflight_threshold[qIndex] 
-					 << " node " << m_node->GetId()  
-					 << " port " << GetIfIndex() 
-					 << " qIndex " << qIndex
-					 <<  std::endl;
-				std::cout << "Time " << Simulator::Now().GetNanoSeconds() 
-					 << " qlen " << qlen 
-					 << " inflight " << perpq_accumu_used_credit[qIndex] - perpq_accumu_recycled_credit[qIndex]
-					 << " node " << m_node->GetId()  
-					 << " port " << GetIfIndex() 
-					 << " qIndex " << qIndex
-					 <<  std::endl;
+				<< " node " << m_node->GetId()  
+				<< " port " << GetIfIndex() 
+				<< " qIndex " << qIndex
+				<< " inflight " << perpq_accumu_used_credit[qIndex] - perpq_accumu_recycled_credit[qIndex]
+				<< " threshold " << perpg_inflight_threshold[qIndex] 
+				<<  std::endl;
 			#endif
 			DequeueAndTransmit(); 
 		}
@@ -611,19 +633,10 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 			else{
 				fcph.ResetTap();
 			}
-
 			fcp->AddHeader(fcph);
 			AddHeader(fcp, 0x0086);
 			RdmaEnqueueFcpQ(fcp);
 			DequeueAndTransmit();
-			#if OUTPUT_1
-			std::cout << "Time " << Simulator::Now().GetNanoSeconds() 
-			<< " ingress_bytes 0"
-			<< " node " << m_node->GetId()
-			<< " port " << GetIfIndex() 
-			<< " qIndex " << vl
-			<< std::endl;
-			#endif
 			m_rdmaReceiveCb(packet, ch);
 		}
 	}
@@ -868,6 +881,20 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
             	sw->m_mmu->fctbs[m_ifIndex] += m_idleReturnBytes;
 				parked_credit -= m_idleReturnBytes;
 				hasRecycled = true;
+				#if OUTPUT_1
+				std::cout
+				<< "Time " << Simulator::Now().GetNanoSeconds()
+				<< " node " << m_node->GetId()
+				<< " port " << GetIfIndex()
+				<< " event SWITCH_HB_RETURN_CREDIT"
+				<< " fccl " << sw->m_mmu->fccl[m_ifIndex]
+				<< " fctbs " << sw->m_mmu->fctbs[m_ifIndex]
+				<< " available_credit "
+				<< (static_cast<int64_t>(sw->m_mmu->fccl[m_ifIndex])
+					- static_cast<int64_t>(sw->m_mmu->fctbs[m_ifIndex]))
+				<< " heartbeat_credit " << parked_credit
+				<< '\n';
+				#endif
 			}
         }
         else
@@ -875,6 +902,21 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
             	perpt_fctbs += m_idleReturnBytes;
 				parked_credit -= m_idleReturnBytes;
 				hasRecycled = true;
+				#if OUTPUT_1
+				std::cout
+				<< "Time " << Simulator::Now().GetNanoSeconds()
+				<< " node " << m_node->GetId()
+				<< " port " << GetIfIndex()
+				<< " event SEND HB NO CONSUME CREDIT"
+				<< " perpt_fccl " << perpt_fccl
+				<< " perpt_fctbs " << perpt_fctbs
+				<< " available_credit "
+				<< (static_cast<int64_t>(perpt_fccl)
+					- static_cast<int64_t>(perpt_fctbs))
+				<< " perpt_parked_credit " << perpt_parked_credit
+				<< " heartbeat_credit " << parked_credit
+				<< '\n';
+				#endif
 			}
         }
     }
@@ -886,14 +928,6 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
     packet->AddHeader(h);
 
     EnqueueHeartbeat(packet, HEARTBEAT_REQUEST_PROTOCOL);
-	// std::cout
-    //         << "Time " << Simulator::Now().GetNanoSeconds()
-    //         << " send keep live "
-    //         << " node " << m_node->GetId()
-    //         << " port " << m_ifIndex
-    //         << " has_pending_data " << h.GetHasRecycled()
-    //         << " parked_credit " << parked_credit
-    //         << std::endl;
 }
 
 void QbbNetDevice::SetIdleReturnBytes(uint32_t bytes) //初始化
@@ -916,39 +950,65 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
     HeartbeatHeader h;
     packet->RemoveHeader(h);
 
-    if (protocol == HEARTBEAT_REQUEST_PROTOCOL) //如果收到了来自上游的心跳包
-    {
-        // std::cout
-        //     << "Time " << Simulator::Now().GetNanoSeconds()
-        //     << " HEARTBEAT_REQUEST_RX"
-        //     << " node " << m_node->GetId()
-        //     << " port " << m_ifIndex
-        //     << " has_pending_data " << h.GetHasRecycled
-        //     << " parked_credit " << h.GetCredit()
-        //     << std::endl;
-		if (h.GetHasRecycled() &&
-            m_node->GetNodeType() > 0)
-        {
-            Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
-            // 上游已扣减 fctbs；计数异常时不能静默跳过下游更新。
-            sw->m_mmu->abr[m_ifIndex] += m_idleReturnBytes;
-            sw->m_mmu->granted_credit[m_ifIndex] -= m_idleReturnBytes;
-            sw->m_mmu->credit_pool += m_idleReturnBytes;
-            // 与 GrantCredit() 中的端口容量镜像保持一致。
-            sw->m_mmu->buffer_size[m_ifIndex] =
-                sw->m_mmu->granted_credit[m_ifIndex];
-        }
-        HeartbeatHeader reply;
-        reply.SetHasRecycled(false); 
-        reply.SetCredit(0);     
-        reply.SetFccl(GetHeartbeatReplyFccl());
+    if (protocol == HEARTBEAT_REQUEST_PROTOCOL)
+	{
+		if (m_node->GetNodeType() > 0) // 下游是交换机
+		{
+			Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
 
-        Ptr<Packet> response = Create<Packet>(0);
-        response->AddHeader(reply);
+			// 保留原有的归还 credit 处理。
+			if (h.GetHasRecycled())
+			{
+				sw->m_mmu->abr[m_ifIndex] += m_idleReturnBytes;
+				sw->m_mmu->granted_credit[m_ifIndex] -= m_idleReturnBytes;
+				sw->m_mmu->credit_pool += m_idleReturnBytes;
 
-        EnqueueHeartbeat(response, HEARTBEAT_REPLY_PROTOCOL);
-        return;
-    }
+				sw->m_mmu->buffer_size[m_ifIndex] =
+					sw->m_mmu->granted_credit[m_ifIndex];
+			}
+			// 保存上游报告的最新剩余额度。
+			sw->m_mmu->total_parked_credit= sw->m_mmu->total_parked_credit- sw->m_mmu->parked_credit[m_ifIndex] + h.GetCredit();
+			sw->m_mmu->parked_credit[m_ifIndex] = h.GetCredit();
+			#if OUTPUT_1
+			std::cout
+			<< "Time " << Simulator::Now().GetNanoSeconds()
+			<< " node " << m_node->GetId()
+			<< " port " << GetIfIndex()
+			<< " event SWITCH_HB_REQUEST"
+			<< " abr " << sw->m_mmu->abr[m_ifIndex]
+			<< " granted_credit " << sw->m_mmu->granted_credit[m_ifIndex]
+			<< " credit_pool " << sw->m_mmu->credit_pool
+			<< " parked_credit " << sw->m_mmu->parked_credit[m_ifIndex]
+			<< " total_parked_credit " << sw->m_mmu->total_parked_credit
+			<< std::endl;
+			#endif
+		}
+		else // 下游是端系统
+		{
+			perpt_parked_credit = h.GetCredit();
+			#if OUTPUT_1
+			std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+				<< " node " << m_node->GetId()
+				<< " port " << GetIfIndex()
+				<< " device " << this << " event HOST_HB_REQUEST"
+				<< " perpt_fccl " << perpt_fccl
+				<< " perpt_fctbs " << perpt_fctbs
+				<< " perpt_parked_credit " << perpt_parked_credit
+				<< std::endl;
+			#endif
+		}
+
+		HeartbeatHeader reply;
+		reply.SetHasRecycled(false);
+		reply.SetCredit(0);
+		reply.SetFccl(GetHeartbeatReplyFccl());
+
+		Ptr<Packet> response = Create<Packet>(0);
+		response->AddHeader(reply);
+
+		EnqueueHeartbeat(response, HEARTBEAT_REPLY_PROTOCOL);
+		return;
+	}
 
     if (protocol == HEARTBEAT_REPLY_PROTOCOL) //如果是上游收到下游的心跳包
     {
@@ -960,12 +1020,32 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 				DynamicCast<SwitchNode>(m_node);
 
 			sw->m_mmu->fccl[m_ifIndex] = receivedFccl;
-			std::cout << "sw receive fccl " << receivedFccl;
+			#if OUTPUT_1
+			std::cout
+			<< "Time " << Simulator::Now().GetNanoSeconds()
+			<< " node " << m_node->GetId()
+			<< " port " << GetIfIndex()
+			<< " event SWITCH_HB_REPLY"
+			<< " fccl " << sw->m_mmu->fccl[m_ifIndex]
+			<< " fctbs " << sw->m_mmu->fctbs[m_ifIndex]
+			<< std::endl;
+			#endif
 		}
 		else
 		{
-			std::cout << "host receive fccl " << receivedFccl;
+			// std::cout << "host receive fccl " << receivedFccl;
 			perpt_fccl = receivedFccl;
+			#if OUTPUT_1
+			std::cout
+			<< "Time " << Simulator::Now().GetNanoSeconds()
+			<< " node " << m_node->GetId()
+			<< " port " << GetIfIndex()
+			<< " event HOST_HB_REPLY "
+			<< " perpt_fccl " << perpt_fccl
+			<< " perpt_fctbs " << perpt_fctbs
+			<< " perpt_parked_credit " << perpt_parked_credit
+			<< std::endl;
+			#endif
 		}
 		uint32_t parked_credit = GetHeartbeatAvailableCredit();
 		// 新额度可能使数据包满足发送条件。

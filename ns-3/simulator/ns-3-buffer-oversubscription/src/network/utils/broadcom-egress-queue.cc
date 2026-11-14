@@ -113,7 +113,7 @@ namespace ns3 {
 		{
 			uint32_t pkt_len = m_queues[1]->Peek()->GetSize();
 			if (credit >= pkt_len && thresholds[1] >= (pkt_len + inflight[1])){
-			// if (thresholds[1] >= (pkt_len + inflight[1])){
+			// if (credit >= pkt_len){
 				found = true;
 				qIndex = 1;
 			}
@@ -127,7 +127,7 @@ namespace ns3 {
 
 					uint32_t pkt_len = m_queues[cur_q_index]->Peek()->GetSize();
 					if (credit >= pkt_len && thresholds[cur_q_index] > (pkt_len + inflight[cur_q_index]))  //round robin
-					// if (thresholds[cur_q_index] > (pkt_len + inflight[cur_q_index]))  //round robin
+					// if (credit >= pkt_len)  //round robin
 					{
 						found = true;
 						break;

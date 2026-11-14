@@ -72,12 +72,10 @@ public:
 	uint32_t ai_step;
 	// 公共池总量
 	uint64_t credit_pool;
-	// 每个端口累计分到的牌的最大值
-	uint32_t granted_credit_top;
 	// 每个端口累计分到的牌。
 	uint32_t granted_credit[pCnt];
-	bool GrantCredit(uint32_t port, uint32_t bytes);
-	// FCP 和心跳回复共用的反馈公式。
+	uint32_t parked_credit[pCnt];
+	uint64_t total_parked_credit;
 	uint32_t GetAdvertisedFccl(uint32_t port) const;
 };
 

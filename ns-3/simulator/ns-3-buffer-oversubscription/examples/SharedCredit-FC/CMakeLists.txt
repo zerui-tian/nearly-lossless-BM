@@ -1,5 +1,6 @@
 
 add_subdirectory(1-pingpong)
+add_subdirectory(2-star-topo)
 # add_subdirectory(14-evaluation)
 # add_subdirectory(15-evaluation)
 add_subdirectory(16-large-scale)

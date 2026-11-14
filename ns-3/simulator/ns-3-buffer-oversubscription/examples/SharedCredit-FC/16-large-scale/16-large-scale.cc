@@ -2,7 +2,10 @@
 #define PATH_TO_PGO_CONFIG "path_to_pgo_config"
 
 #include <iostream>
+#include <stdint.h>
 #include <fstream>
+#include <map>
+#include <limits>
 #include <unordered_map>
 #include <time.h>
 #include "ns3/core-module.h"
@@ -159,6 +162,8 @@ struct FlowInput {
 FlowInput flow_input = {0};
 uint32_t flow_num;
 
+void start_flow_progress_watchdog();
+
 void ReadFlowInput() {
 	if (flow_input.idx < flow_num) {
 		flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.dport >> flow_input.maxPacketCount >> flow_input.start_time;
@@ -183,6 +188,7 @@ void ScheduleFlowInputs() {
 		Simulator::Schedule(Seconds(flow_input.start_time) - Simulator::Now(), ScheduleFlowInputs);
 	} else { // no more flows, close the file
 		flowf.close();
+		start_flow_progress_watchdog();
 	}
 }
 
@@ -295,6 +301,248 @@ void dump_zero_credit_ports(const NodeContainer& nodes) {
 	std::cout << "ZERO_CREDIT_PORTS count=" << matched_ports << std::endl;
 }
 
+// End-of-simulation snapshot only; this function does not modify credit state.
+// configured_buffer_bytes is the value passed to SetBufferPool(), NOT the
+// MMU's per-port buffer_size[] array.
+void dump_credit_relations(const NodeContainer& nodes,
+                           uint64_t configured_buffer_bytes) {
+	uint64_t pool_checked = 0, pool_failed = 0;
+	uint64_t link_checked = 0, link_failed = 0, link_skipped = 0;
+	uint64_t parked_checked = 0, parked_failed = 0;
+	std::cout << "\nCREDIT_RELATIONS time_ns="
+			  << Simulator::Now().GetNanoSeconds() << '\n';
+
+	// Relation 1: include every MMU accounting slot, including unused ports.
+	std::cout << "BUFFER_CREDIT_CHECK\n"
+			  << "switch\tbuffer_size\tcredit_pool\tsum_granted_credit"
+			  << "\tpool_plus_granted\tdiff_buffer_minus_total\tstatus\n";
+	for (uint32_t i = 0; i < nodes.GetN(); ++i) {
+		Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(nodes.Get(i));
+		if (!sw)
+			continue;
+		uint64_t sum_granted = 0;
+		for (uint32_t port = 0; port < SwitchMmu::pCnt; ++port)
+			sum_granted += static_cast<uint64_t>(sw->m_mmu->granted_credit[port]);
+		const uint64_t pool = sw->m_mmu->credit_pool;
+		const uint64_t total = pool + sum_granted;
+		const bool pass = configured_buffer_bytes == total;
+		++pool_checked;
+		if (!pass)
+			++pool_failed;
+		std::cout << sw->GetId() << '\t' << configured_buffer_bytes
+				  << '\t' << pool << '\t' << sum_granted << '\t' << total
+				  << '\t' << (static_cast<int64_t>(configured_buffer_bytes)
+							 - static_cast<int64_t>(total))
+				  << '\t' << (pass ? "PASS" : "FAIL") << '\n';
+	}
+
+	// Relation 2: visit every switch ingress, then find its actual upstream.
+	// This includes NIC -> switch and switch -> switch, but not switch -> NIC.
+	std::cout << "LINK_CREDIT_CHECK\n"
+			  << "link\tupstream_fccl\tupstream_fctbs\tavailable_credit"
+			  << "\tdownstream_granted_credit\tdiff_available_minus_granted\tstatus\n";
+	for (uint32_t i = 0; i < nodes.GetN(); ++i) {
+		Ptr<SwitchNode> downstream = DynamicCast<SwitchNode>(nodes.Get(i));
+		if (!downstream)
+			continue;
+		for (uint32_t j = 0; j < downstream->GetNDevices(); ++j) {
+			Ptr<QbbNetDevice> input_device =
+				DynamicCast<QbbNetDevice>(downstream->GetDevice(j));
+			if (!input_device)
+				continue;
+			if (!input_device->GetChannel() ||
+				input_device->GetChannel()->GetNDevices() != 2) {
+				++link_skipped;
+				continue;
+			}
+			Ptr<QbbNetDevice> output_device =
+				DynamicCast<QbbNetDevice>(input_device->GetRemoteDevice());
+			if (!output_device || !output_device->GetNode()) {
+				++link_skipped;
+				continue;
+			}
+			Ptr<Node> upstream_node = output_device->GetNode();
+			Ptr<SwitchNode> upstream = DynamicCast<SwitchNode>(upstream_node);
+			const uint32_t in_port = input_device->GetIfIndex();
+			const uint32_t out_port = output_device->GetIfIndex();
+			NS_ABORT_MSG_IF(in_port >= SwitchMmu::pCnt,
+				"Ingress port exceeds MMU arrays");
+			uint64_t fccl, fctbs;
+			if (upstream) {
+				NS_ABORT_MSG_IF(out_port >= SwitchMmu::pCnt,
+					"Egress port exceeds MMU arrays");
+				fccl = upstream->m_mmu->fccl[out_port];
+				fctbs = upstream->m_mmu->fctbs[out_port];
+			} else if (upstream_node->GetNodeType() == 0) {
+				fccl = output_device->perpt_fccl;
+				fctbs = output_device->perpt_fctbs;
+			} else {
+				++link_skipped;
+				continue;
+			}
+			// Widen BEFORE subtracting, so negative credit is visible.
+			const int64_t available = static_cast<int64_t>(fccl)
+				- static_cast<int64_t>(fctbs);
+			const uint64_t granted = downstream->m_mmu->granted_credit[in_port];
+			const int64_t diff = available - static_cast<int64_t>(granted);
+			const bool pass = diff == 0;
+			++link_checked;
+			if (!pass)
+				++link_failed;
+			std::cout << (upstream ? "switch " : "NIC ")
+					  << upstream_node->GetId() << ':' << out_port
+					  << " -> switch " << downstream->GetId() << ':' << in_port
+					  << '\t' << fccl << '\t' << fctbs << '\t' << available
+					  << '\t' << granted << '\t' << diff
+					  << '\t' << (pass ? "PASS" : "FAIL") << '\n';
+		}
+	}
+
+	// Relation 3: compare local values at every real switch Qbb port.
+	// parked_credit is the last received heartbeat report, not a live reading.
+	std::cout << "PARKED_CREDIT_CHECK\n"
+			  << "switch\tport\tgranted_credit\tparked_credit"
+			  << "\tdiff_granted_minus_parked\tstatus\n";
+	for (uint32_t i = 0; i < nodes.GetN(); ++i) {
+		Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(nodes.Get(i));
+		if (!sw)
+			continue;
+		for (uint32_t j = 0; j < sw->GetNDevices(); ++j) {
+			Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
+			if (!dev)
+				continue;
+			const uint32_t port = dev->GetIfIndex();
+			NS_ABORT_MSG_IF(port >= SwitchMmu::pCnt,
+				"Switch port exceeds MMU arrays");
+			const uint64_t granted = sw->m_mmu->granted_credit[port];
+			const uint64_t parked = sw->m_mmu->parked_credit[port];
+			const bool pass = granted == parked;
+			++parked_checked;
+			if (!pass)
+				++parked_failed;
+			std::cout << sw->GetId() << '\t' << port
+					  << '\t' << granted << '\t' << parked
+					  << '\t' << (static_cast<int64_t>(granted)
+								 - static_cast<int64_t>(parked))
+					  << '\t' << (pass ? "PASS" : "FAIL") << '\n';
+		}
+	}
+	std::cout << "CREDIT_RELATIONS_SUMMARY"
+			  << " buffer_checked=" << pool_checked << " buffer_failed=" << pool_failed
+			  << " link_checked=" << link_checked << " link_failed=" << link_failed
+			  << " link_skipped=" << link_skipped
+			  << " parked_checked=" << parked_checked << " parked_failed=" << parked_failed
+			  << std::endl;
+}
+
+// Watch only RDMA acknowledgement progress. Heartbeat/FCP traffic and
+// retransmissions without new acknowledgements do not reset the timeout.
+uint64_t finished_flows = 0;
+uint64_t flow_progress_check_interval_ns = 10000; // 10 us
+uint64_t flow_no_progress_timeout_ns = 1000000; // 1 ms; configurable
+bool flow_watchdog_started = false;
+bool flow_stop_requested = false;
+Time last_flow_progress_time;
+EventId flow_watchdog_event;
+std::map<Ptr<RdmaQueuePair>, uint64_t> flow_ack_high_watermarks;
+
+void stop_for_flow_progress(const char* reason) {
+	if (flow_stop_requested)
+		return;
+	flow_stop_requested = true;
+	if (!flow_watchdog_event.IsExpired())
+		Simulator::Cancel(flow_watchdog_event);
+	std::cout << "\nFLOW_SIMULATION_STOP reason=" << reason
+		<< " time_ns=" << Simulator::Now().GetNanoSeconds()
+		<< " finished_flows=" << finished_flows << " total_flows=" << flow_num
+		<< " last_progress_ns=" << last_flow_progress_time.GetNanoSeconds()
+		<< " idle_ns=" << (Simulator::Now() - last_flow_progress_time).GetNanoSeconds()
+		<< " timeout_ns=" << flow_no_progress_timeout_ns << std::endl;
+	// Return from Run() after the current event; keep the existing final dumps.
+	Simulator::Stop();
+}
+
+bool sample_flow_ack_progress() {
+	bool progressed = false;
+	std::map<Ptr<RdmaQueuePair>, uint64_t> current_high_watermarks;
+	for (uint32_t i = 0; i < n.GetN(); ++i) {
+		if (n.Get(i)->GetNodeType() != 0)
+			continue;
+		Ptr<RdmaDriver> driver = n.Get(i)->GetObject<RdmaDriver>();
+		if (driver == NULL || driver->m_rdma == NULL)
+			continue;
+		for (const auto& entry : driver->m_rdma->m_qpMap) {
+			Ptr<RdmaQueuePair> qp = entry.second;
+			if (qp == NULL || qp->snd_una >= qp->m_size)
+				continue; // Completion is tracked separately in qp_finish().
+			const auto previous = flow_ack_high_watermarks.find(qp);
+			const uint64_t old_ack = previous == flow_ack_high_watermarks.end()
+				? 0 : previous->second;
+			const uint64_t ack = qp->snd_una;
+			if (ack > old_ack)
+				progressed = true;
+			current_high_watermarks[qp] = ack > old_ack ? ack : old_ack;
+		}
+	}
+	// Keep one sample of live QPs. Removing a completed QP cannot lower a
+	// global sum and hide another QP's progress; there is no such sum here.
+	flow_ack_high_watermarks.swap(current_high_watermarks);
+	return progressed;
+}
+
+void check_flow_progress_watchdog() {
+	if (flow_stop_requested)
+		return;
+	if (finished_flows == flow_num) {
+		stop_for_flow_progress("ALL_FLOWS_COMPLETED");
+		return;
+	}
+	if (sample_flow_ack_progress())
+		last_flow_progress_time = Simulator::Now();
+	if (Simulator::Now() - last_flow_progress_time >=
+		NanoSeconds(flow_no_progress_timeout_ns)) {
+		stop_for_flow_progress("NO_PROGRESS_TIMEOUT");
+		return;
+	}
+	flow_watchdog_event = Simulator::Schedule(
+		NanoSeconds(flow_progress_check_interval_ns), check_flow_progress_watchdog);
+}
+
+void start_flow_progress_watchdog() {
+	if (flow_stop_requested || flow_watchdog_started || flow_input.idx < flow_num)
+		return;
+	if (flow_num == 0) {
+		last_flow_progress_time = Simulator::Now();
+		stop_for_flow_progress("NO_FLOWS");
+		return;
+	}
+	if (finished_flows == flow_num) {
+		stop_for_flow_progress("ALL_FLOWS_COMPLETED");
+		return;
+	}
+	flow_watchdog_started = true;
+	// All flows have been scheduled. Give them a fresh timeout window, even
+	// when no QP has completed yet. Same-time app starts precede the first poll.
+	last_flow_progress_time = Simulator::Now();
+	sample_flow_ack_progress(); // Seed the per-QP baselines.
+	std::cout << "\nFLOW_PROGRESS_WATCHDOG_START time_ns="
+		<< Simulator::Now().GetNanoSeconds()
+		<< " last_flow_start_ns=" << Seconds(flow_input.start_time).GetNanoSeconds()
+		<< " interval_ns=" << flow_progress_check_interval_ns
+		<< " timeout_ns=" << flow_no_progress_timeout_ns << std::endl;
+	flow_watchdog_event = Simulator::Schedule(
+		NanoSeconds(flow_progress_check_interval_ns), check_flow_progress_watchdog);
+}
+
+void note_finished_flow() {
+	if (flow_stop_requested)
+		return;
+	++finished_flows;
+	last_flow_progress_time = Simulator::Now();
+	if (finished_flows == flow_num)
+		stop_for_flow_progress("ALL_FLOWS_COMPLETED");
+}
+
 void qp_finish(FILE* fout, Ptr<RdmaQueuePair> q) {
 	uint32_t sid = ip_to_node_id(q->sip), did = ip_to_node_id(q->dip);
 	uint64_t base_rtt = pairRtt[sid][did], b = pairBw[sid][did];
@@ -308,6 +556,9 @@ void qp_finish(FILE* fout, Ptr<RdmaQueuePair> q) {
 	Ptr<Node> dstNode = n.Get(did);
 	Ptr<RdmaDriver> rdma = dstNode->GetObject<RdmaDriver> ();
 	rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->m_pg, q->sport);
+
+	// Count completion only after all original completion work is done.
+	note_finished_flow();
 }
 
 void get_pfc(FILE* fout, Ptr<QbbNetDevice> dev, uint32_t type) {
@@ -875,6 +1126,18 @@ int main(int argc, char *argv[])
 			simulator_stop_time = v;
 			std::cout << "SIMULATOR_STOP_TIME\t\t" << simulator_stop_time << "\n";
 		}
+		else if (key.compare("FLOW_PROGRESS_CHECK_INTERVAL_NS") == 0)
+		{
+			conf >> flow_progress_check_interval_ns;
+			NS_ABORT_MSG_IF(conf.fail(), "Invalid FLOW_PROGRESS_CHECK_INTERVAL_NS");
+			std::cout << "FLOW_PROGRESS_CHECK_INTERVAL_NS\t" << flow_progress_check_interval_ns << '\n';
+		}
+		else if (key.compare("FLOW_NO_PROGRESS_TIMEOUT_NS") == 0)
+		{
+			conf >> flow_no_progress_timeout_ns;
+			NS_ABORT_MSG_IF(conf.fail(), "Invalid FLOW_NO_PROGRESS_TIMEOUT_NS");
+			std::cout << "FLOW_NO_PROGRESS_TIMEOUT_NS\t" << flow_no_progress_timeout_ns << '\n';
+		}
 		else if (key.compare("ALPHA_RESUME_INTERVAL") == 0)
 		{
 			double v;
@@ -1129,6 +1392,11 @@ int main(int argc, char *argv[])
 		fflush(stdout);
 	}
 	conf.close();
+	NS_ABORT_MSG_IF(flow_progress_check_interval_ns == 0 || flow_no_progress_timeout_ns == 0,
+		"Flow progress check interval and timeout must both be positive (ns)");
+	NS_ABORT_MSG_IF(flow_progress_check_interval_ns > flow_no_progress_timeout_ns ||
+		flow_no_progress_timeout_ns > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()),
+		"Flow progress interval must not exceed timeout; timeout must fit in int64 nanoseconds");
 
 	// overriding config file. I prefer to use cmd arguments
 	// cc_mode = algorithm; // overrides configuration file
@@ -1339,7 +1607,8 @@ int main(int argc, char *argv[])
 	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = SwitchMmu::pCnt * (1 * 100 * 1000 * 2 / 8);
+	buffer_size = SwitchMmu::pCnt * (0.7 * 100 * 1000 * 2 / 8);
+	std::cout << "buffer_size : " << buffer_size << std::endl;
 	uint32_t per_port_buffer = buffer_size / SwitchMmu::pCnt;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch
@@ -1511,6 +1780,8 @@ int main(int argc, char *argv[])
 		ReadFlowInput();
 		std::cout << flow_input.start_time << std::endl;
 		Simulator::Schedule(Seconds(flow_input.start_time) - Simulator::Now(), ScheduleFlowInputs);
+	} else {
+		Simulator::ScheduleNow(start_flow_progress_watchdog);
 	}
 	std::cout << "Total Flows: " << flow_num << std::endl;
 	topof.close();
@@ -1559,7 +1830,8 @@ int main(int argc, char *argv[])
 		}
 	}
 	Simulator::Run();
-	dump_zero_credit_ports(n);
+	// dump_zero_credit_ports(n);
+	// dump_credit_relations(n, buffer_size);
 	dump_unfinished_flows(unfinished_flow_output_file);
 	Simulator::Destroy();
 	NS_LOG_INFO("Done.");

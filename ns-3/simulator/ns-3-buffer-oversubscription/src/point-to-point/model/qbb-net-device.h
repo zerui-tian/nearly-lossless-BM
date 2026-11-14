@@ -77,7 +77,7 @@ class QbbNetDevice : public PointToPointNetDevice
 {
 public:
   void SetIdleReturnBytes(uint32_t bytes);
-  uint32_t m_idleReturnBytes = 1048;//配置空闲情况心跳包回收的credit大小
+  uint32_t m_idleReturnBytes = 10;//配置空闲情况心跳包回收的credit大小
   uint32_t packetBytes;
   static const uint32_t qCnt = Q_CNT;	// Number of queues/priorities used
   enum HeartbeatProtocol : uint16_t
@@ -185,8 +185,8 @@ public:
     return 0;
   }
     //cbfc
-  uint32_t perpt_fctbs; //per priority queue每个队列发送的
-  uint32_t perpt_fccl;  //per priority queue每个队列接收的下游fccl值
+  uint32_t perpt_fctbs; //per priority queue每个端口发送的
+  uint32_t perpt_fccl;  //per priority queue每个端口接收的下游fccl值
 
   uint32_t perpq_accumu_used_credit[qCnt]; 
 	uint32_t perpq_accumu_recycled_credit[qCnt]; 
@@ -205,6 +205,9 @@ public:
 
   uint32_t qlen_max;
   uint32_t qlen_min;
+
+  // 本网卡作为下游时，保存上游心跳报告的剩余 credit。
+  uint32_t perpt_parked_credit;
 
   void StartHeartbeat();
   void SendHeartbeat();

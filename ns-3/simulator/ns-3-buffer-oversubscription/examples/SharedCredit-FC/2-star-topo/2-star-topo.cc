@@ -1609,7 +1609,6 @@ int main(int argc, char *argv[])
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
 	buffer_size = (4 * 100 * 2000 * 2 / 8);
 	std::cout << "buffer_size : " << buffer_size << std::endl;
-	uint32_t per_port_buffer = buffer_size / SwitchMmu::pCnt;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch
 			Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
@@ -1620,6 +1619,8 @@ int main(int argc, char *argv[])
 					Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
 					uint64_t rate = dev->GetDataRate().GetBitRate();
 					uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetNanoSeconds();
+					// set inflight threshold
+					uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
 					// dev->qCnt = p_queue_count;
 					// dev->m_rdmaEQ->qCnt = p_queue_count;
 					// set ecn
@@ -1627,7 +1628,7 @@ int main(int argc, char *argv[])
 					NS_ASSERT_MSG(rate2kmax.find(rate) != rate2kmax.end(), "must set kmax for each link speed");
 					NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
 					sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
-					sw->m_mmu->maxThreshold = per_port_buffer;
+					sw->m_mmu->maxThreshold = buffer_size;
 					sw->m_mmu->SetInflightThreshold(j, qu, packet_size * 2);
 					// sw->m_mmu->step[j][qu] = step_bytes;
 				}
@@ -1695,11 +1696,11 @@ int main(int argc, char *argv[])
 				dev->SetQlenMin(qmin*packet_size);
 				// dev->SetAiStep(packet_size / 2);
 				
-				// uint64_t rate = dev->GetDataRate().GetBitRate();
-				// uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetNanoSeconds();
+				uint64_t rate = dev->GetDataRate().GetBitRate();
+				uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetNanoSeconds();
 				// set inflight threshold
-				// uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
-				dev->maxThreshold = per_port_buffer;
+				uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
+				dev->maxThreshold = buffer_size;
 				for(int qu = 0; qu < QbbNetDevice::qCnt; qu++){
 					dev->perpg_inflight_threshold[qu] = packet_size * 2;//sgh 10/18
 					// dev->m_step[qu] = step_bytes;
