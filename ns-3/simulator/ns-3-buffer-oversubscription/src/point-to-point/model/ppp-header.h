@@ -85,12 +85,16 @@ public:
    */
   uint16_t GetProtocol (void);
 
+  void SetCB (uint32_t cb);
+  uint32_t GetCB (void);
+
 private:
 
   /**
    * \brief The PPP protocol type of the payload packet
    */
   uint16_t m_protocol;
+  uint32_t m_cb; // credit balance
 };
 
 } // namespace ns3

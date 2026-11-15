@@ -399,9 +399,9 @@ void dump_credit_relations(const NodeContainer& nodes,
 	}
 
 	// Relation 3: compare local values at every real switch Qbb port.
-	// parked_credit is the last received heartbeat report, not a live reading.
+	// credit_balance is the last received heartbeat report, not a live reading.
 	std::cout << "PARKED_CREDIT_CHECK\n"
-			  << "switch\tport\tgranted_credit\tparked_credit"
+			  << "switch\tport\tgranted_credit\tcredit_balance"
 			  << "\tdiff_granted_minus_parked\tstatus\n";
 	for (uint32_t i = 0; i < nodes.GetN(); ++i) {
 		Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(nodes.Get(i));
@@ -415,7 +415,7 @@ void dump_credit_relations(const NodeContainer& nodes,
 			NS_ABORT_MSG_IF(port >= SwitchMmu::pCnt,
 				"Switch port exceeds MMU arrays");
 			const uint64_t granted = sw->m_mmu->granted_credit[port];
-			const uint64_t parked = sw->m_mmu->parked_credit[port];
+			const uint64_t parked = sw->m_mmu->credit_balance[port];
 			const bool pass = granted == parked;
 			++parked_checked;
 			if (!pass)

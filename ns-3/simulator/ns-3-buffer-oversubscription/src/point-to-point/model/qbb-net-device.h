@@ -207,7 +207,7 @@ public:
   uint32_t qlen_min;
 
   // 本网卡作为下游时，保存上游心跳报告的剩余 credit。
-  uint32_t perpt_parked_credit;
+  uint32_t perpt_credit_balance;
 
   void StartHeartbeat();
   void SendHeartbeat();

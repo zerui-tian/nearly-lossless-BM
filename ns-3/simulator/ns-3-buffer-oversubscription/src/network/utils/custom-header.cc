@@ -109,9 +109,9 @@ void CustomHeader::Serialize (Buffer::Iterator start) const{
   // ppp
   if (headerType & L2_Header){
 	  i.WriteHtonU16(pppProto);
-	  // skip 12 Bytes, so total 14 bytes as Ethernet
+	  i.WriteHtonU32(pppCB);
+	  // skip 8 Bytes, so total 14 bytes as Ethernet
 	  i.WriteU64(0); // 8 bytes
-	  i.WriteU32(0); // 4 byets
   }
 
   // IPv4
@@ -192,7 +192,8 @@ CustomHeader::Deserialize (Buffer::Iterator start)
   int l2Size = 0;
   if (headerType & L2_Header){
 	  pppProto = i.ReadNtohU16();
-	  i.Next(12);
+	  pppCB = i.ReadNtohU32();
+	  i.Next(8); // skip 8 Bytes, so total 14 bytes as Ethernet
 	  l2Size = 14;
   }
 

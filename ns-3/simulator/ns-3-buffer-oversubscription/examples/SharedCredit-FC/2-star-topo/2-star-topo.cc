@@ -100,7 +100,7 @@ float qmin = 3;
 float qmax = 6;
 
 // 示例值，按实验需求配置。
-uint32_t credit_grant_bytes = 1048;
+uint32_t credit_grant_bytes = 1052;
 uint64_t credit_grant_interval_ns = credit_grant_bytes * 8 / 100 / 1.2;
 
 unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
@@ -264,7 +264,7 @@ void dump_zero_credit_ports(const NodeContainer& nodes) {
 
 			const uint32_t out_port = output_device->GetIfIndex();
 			NS_ASSERT_MSG(out_port < SwitchMmu::pCnt, "Egress port exceeds MMU arrays");
-			if (upstream->m_mmu->fccl[out_port] - upstream->m_mmu->fctbs[out_port] >= 1048)
+			if (upstream->m_mmu->fccl[out_port] - upstream->m_mmu->fctbs[out_port] >= 1052)
 				continue;
 
 			++matched_ports; // Include matching ports even when the egress queue is empty.
@@ -399,9 +399,9 @@ void dump_credit_relations(const NodeContainer& nodes,
 	}
 
 	// Relation 3: compare local values at every real switch Qbb port.
-	// parked_credit is the last received heartbeat report, not a live reading.
+	// credit_balance is the last received heartbeat report, not a live reading.
 	std::cout << "PARKED_CREDIT_CHECK\n"
-			  << "switch\tport\tgranted_credit\tparked_credit"
+			  << "switch\tport\tgranted_credit\tcredit_balance"
 			  << "\tdiff_granted_minus_parked\tstatus\n";
 	for (uint32_t i = 0; i < nodes.GetN(); ++i) {
 		Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(nodes.Get(i));
@@ -415,7 +415,7 @@ void dump_credit_relations(const NodeContainer& nodes,
 			NS_ABORT_MSG_IF(port >= SwitchMmu::pCnt,
 				"Switch port exceeds MMU arrays");
 			const uint64_t granted = sw->m_mmu->granted_credit[port];
-			const uint64_t parked = sw->m_mmu->parked_credit[port];
+			const uint64_t parked = sw->m_mmu->credit_balance[port];
 			const bool pass = granted == parked;
 			++parked_checked;
 			if (!pass)
@@ -1607,7 +1607,7 @@ int main(int argc, char *argv[])
 	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = (4 * 100 * 2000 * 2 / 8);
+	buffer_size = (2 *100 * 2000 * 2 / 8);
 	std::cout << "buffer_size : " << buffer_size << std::endl;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch

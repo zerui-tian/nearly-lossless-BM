@@ -242,7 +242,7 @@ QbbNetDevice::QbbNetDevice()
 	memset(need_set_tap, 0, sizeof(need_set_tap));
 	memset(need_ret_tap, 0, sizeof(need_ret_tap));
 	memset(rate_adjusting, 0, sizeof(rate_adjusting));
-	perpt_parked_credit = 0;
+	perpt_credit_balance = 0;
 }
 
 QbbNetDevice::~QbbNetDevice()
@@ -359,7 +359,7 @@ QbbNetDevice::DequeueAndTransmit(void)
 					<< " device " << this << " event HOST_ACK_SEND"
 					<< " perpt_fccl " << perpt_fccl
 					<< " perpt_fctbs " << perpt_fctbs
-					<< " perpt_parked_credit " << perpt_parked_credit
+					<< " perpt_credit_balance " << perpt_credit_balance
 					<< " inflight " << perpq_accumu_used_credit[1] - perpq_accumu_recycled_credit[1]
 					<< std::endl;
 				#endif
@@ -368,6 +368,7 @@ QbbNetDevice::DequeueAndTransmit(void)
 					Ipv4Header h;
 					p->RemoveHeader(ppp);
 					p->RemoveHeader(h);
+					ppp.SetCB(perpt_fccl - perpt_fctbs);
 					h.SetTap();
 					// std::cout << "set tap for ack packet at node " << m_node->GetId() << " at port " << GetIfIndex() << "qIndex 1" << std::endl;
 					p->AddHeader(h);
@@ -379,6 +380,7 @@ QbbNetDevice::DequeueAndTransmit(void)
 					Ipv4Header h;
 					p->RemoveHeader(ppp);
 					p->RemoveHeader(h);
+					ppp.SetCB(perpt_fccl - perpt_fctbs);
 					h.ResetTap();
 					// std::cout << "reset tap for ack packet at node " << m_node->GetId() << " at port " << GetIfIndex() << "qIndex 1" << std::endl;
 					p->AddHeader(h);
@@ -406,7 +408,7 @@ QbbNetDevice::DequeueAndTransmit(void)
 					<< " device " << this << " event HOST_DATA_SEND"
 					<< " perpt_fccl " << perpt_fccl
 					<< " perpt_fctbs " << perpt_fctbs
-					<< " perpt_parked_credit " << perpt_parked_credit
+					<< " perpt_credit_balance " << perpt_credit_balance
 					<< " perpq_accumu_used_credit " << perpq_accumu_used_credit[lastQp->m_pg]
 					<< " perpq_accumu_recycled_credit " << perpq_accumu_recycled_credit[lastQp->m_pg]
 					<< " inflight " << perpq_accumu_used_credit[lastQp->m_pg] - perpq_accumu_recycled_credit[lastQp->m_pg]
@@ -417,6 +419,7 @@ QbbNetDevice::DequeueAndTransmit(void)
 					Ipv4Header h;
 					p->RemoveHeader(ppp);
 					p->RemoveHeader(h);
+					ppp.SetCB(perpt_fccl - perpt_fctbs);
 					h.SetTap();
 					// std::cout << "set tap for ack packet at node " << m_node->GetId() << " at port " << GetIfIndex() << "qIndex " << lastQp->m_pg << std::endl;
 					p->AddHeader(h);
@@ -428,6 +431,7 @@ QbbNetDevice::DequeueAndTransmit(void)
 					Ipv4Header h;
 					p->RemoveHeader(ppp);
 					p->RemoveHeader(h);
+					ppp.SetCB(perpt_fccl - perpt_fctbs);
 					h.ResetTap();
 					// std::cout << "reset tap for ack packet at node " << m_node->GetId() << " at port " << GetIfIndex() << "qIndex " << lastQp->m_pg << std::endl;
 					p->AddHeader(h);
@@ -482,6 +486,11 @@ QbbNetDevice::DequeueAndTransmit(void)
 			if (qIndex != 0)
 			{
 				p->PeekHeader(ch);
+
+				PppHeader ppp;
+				p->RemoveHeader(ppp);
+				ppp.SetCB(sw->m_mmu->fccl[m_ifIndex] - sw->m_mmu->fctbs[m_ifIndex]);
+				p->AddHeader(ppp);
 
 				m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
 
@@ -570,7 +579,7 @@ QbbNetDevice::Receive(Ptr<Packet> packet)
 				<< " event HOST_FCP_RECEIVE"
 				<< " perpt_fccl " << perpt_fccl
 				<< " perpt_fctbs " << perpt_fctbs
-				<< " perpt_parked_credit " << perpt_parked_credit
+				<< " perpt_credit_balance " << perpt_credit_balance
 				<< std::endl;
 			#endif
 			if(tap){
@@ -869,7 +878,7 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
     const bool hasData = HasEgressBytesSend();
 	bool hasRecycled = false;
 	HeartbeatHeader h;
-	uint32_t parked_credit = GetHeartbeatAvailableCredit();
+	uint32_t credit_balance = GetHeartbeatAvailableCredit();
 
 	
     if (!hasData)//没有数据需要发送的时候，可能需要消耗credit，因此改变fctbs
@@ -879,7 +888,7 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
             Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(m_node);
 			if(sw->m_mmu->fctbs[m_ifIndex] + m_idleReturnBytes <= sw->m_mmu->fccl[m_ifIndex]){
             	sw->m_mmu->fctbs[m_ifIndex] += m_idleReturnBytes;
-				parked_credit -= m_idleReturnBytes;
+				credit_balance -= m_idleReturnBytes;
 				hasRecycled = true;
 				#if OUTPUT_1
 				std::cout
@@ -892,7 +901,7 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
 				<< " available_credit "
 				<< (static_cast<int64_t>(sw->m_mmu->fccl[m_ifIndex])
 					- static_cast<int64_t>(sw->m_mmu->fctbs[m_ifIndex]))
-				<< " heartbeat_credit " << parked_credit
+				<< " heartbeat_credit " << credit_balance
 				<< '\n';
 				#endif
 			}
@@ -900,7 +909,7 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
         else
         {	if(perpt_fctbs + m_idleReturnBytes <= perpt_fccl){
             	perpt_fctbs += m_idleReturnBytes;
-				parked_credit -= m_idleReturnBytes;
+				credit_balance -= m_idleReturnBytes;
 				hasRecycled = true;
 				#if OUTPUT_1
 				std::cout
@@ -913,14 +922,14 @@ void QbbNetDevice::SendHeartbeat() //构造心跳包并将其推入队列
 				<< " available_credit "
 				<< (static_cast<int64_t>(perpt_fccl)
 					- static_cast<int64_t>(perpt_fctbs))
-				<< " perpt_parked_credit " << perpt_parked_credit
-				<< " heartbeat_credit " << parked_credit
+				<< " perpt_credit_balance " << perpt_credit_balance
+				<< " heartbeat_credit " << credit_balance
 				<< '\n';
 				#endif
 			}
         }
     }
-    h.SetCredit(parked_credit); // 在更新 fctbs 后计算
+    h.SetCredit(credit_balance); // 在更新 fctbs 后计算
     h.SetHasRecycled(hasRecycled);
     h.SetFccl(0); // 请求方向无效。
 
@@ -967,8 +976,8 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 					sw->m_mmu->granted_credit[m_ifIndex];
 			}
 			// 保存上游报告的最新剩余额度。
-			sw->m_mmu->total_parked_credit= sw->m_mmu->total_parked_credit- sw->m_mmu->parked_credit[m_ifIndex] + h.GetCredit();
-			sw->m_mmu->parked_credit[m_ifIndex] = h.GetCredit();
+			sw->m_mmu->total_credit_balance= sw->m_mmu->total_credit_balance- sw->m_mmu->credit_balance[m_ifIndex] + h.GetCredit();
+			sw->m_mmu->credit_balance[m_ifIndex] = h.GetCredit();
 			#if OUTPUT_1
 			std::cout
 			<< "Time " << Simulator::Now().GetNanoSeconds()
@@ -978,14 +987,14 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 			<< " abr " << sw->m_mmu->abr[m_ifIndex]
 			<< " granted_credit " << sw->m_mmu->granted_credit[m_ifIndex]
 			<< " credit_pool " << sw->m_mmu->credit_pool
-			<< " parked_credit " << sw->m_mmu->parked_credit[m_ifIndex]
-			<< " total_parked_credit " << sw->m_mmu->total_parked_credit
+			<< " credit_balance " << sw->m_mmu->credit_balance[m_ifIndex]
+			<< " total_credit_balance " << sw->m_mmu->total_credit_balance
 			<< std::endl;
 			#endif
 		}
 		else // 下游是端系统
 		{
-			perpt_parked_credit = h.GetCredit();
+			perpt_credit_balance = h.GetCredit();
 			#if OUTPUT_1
 			std::cout << "Time " << Simulator::Now().GetNanoSeconds()
 				<< " node " << m_node->GetId()
@@ -993,7 +1002,7 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 				<< " device " << this << " event HOST_HB_REQUEST"
 				<< " perpt_fccl " << perpt_fccl
 				<< " perpt_fctbs " << perpt_fctbs
-				<< " perpt_parked_credit " << perpt_parked_credit
+				<< " perpt_credit_balance " << perpt_credit_balance
 				<< std::endl;
 			#endif
 		}
@@ -1043,11 +1052,11 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 			<< " event HOST_HB_REPLY "
 			<< " perpt_fccl " << perpt_fccl
 			<< " perpt_fctbs " << perpt_fctbs
-			<< " perpt_parked_credit " << perpt_parked_credit
+			<< " perpt_credit_balance " << perpt_credit_balance
 			<< std::endl;
 			#endif
 		}
-		uint32_t parked_credit = GetHeartbeatAvailableCredit();
+		uint32_t credit_balance = GetHeartbeatAvailableCredit();
 		// 新额度可能使数据包满足发送条件。
 		DequeueAndTransmit();
         // std::cout
@@ -1056,7 +1065,7 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 			
         //     << " node " << m_node->GetId()
         //     << " port " << m_ifIndex
-        //     << " parked_credit " << parked_credit
+        //     << " credit_balance " << credit_balance
         //     << std::endl;
 
         // 每个回复触发下一次请求，形成持续循环。

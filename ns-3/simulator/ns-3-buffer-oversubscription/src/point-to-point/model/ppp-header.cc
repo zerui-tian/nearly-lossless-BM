@@ -89,12 +89,14 @@ void
 PppHeader::Serialize (Buffer::Iterator start) const
 {
   start.WriteHtonU16 (m_protocol);
+  start.WriteHtonU32 (m_cb);
 }
 
 uint32_t
 PppHeader::Deserialize (Buffer::Iterator start)
 {
   m_protocol = start.ReadNtohU16 ();
+  m_cb = start.ReadNtohU32 ();
   return GetSerializedSize ();
 }
 
@@ -108,6 +110,18 @@ uint16_t
 PppHeader::GetProtocol (void)
 {
   return m_protocol;
+}
+
+void
+PppHeader::SetCB (uint32_t cb)
+{
+  m_cb = cb;
+}
+
+uint32_t
+PppHeader::GetCB (void)
+{
+  return m_cb;
 }
 
 

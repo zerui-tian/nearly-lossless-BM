@@ -70,6 +70,7 @@ public:
 
   // ppp header
   uint16_t pppProto;
+  uint32_t pppCB; // credit balance
 
   // IPv4 header
   enum FlagsE {

@@ -157,6 +157,7 @@ SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader& ch)
         if (tap) {
             m_mmu->need_ret_tap[inDev][qIndex] = true;
         }
+        m_mmu->credit_balance[inDev] = ch.pppCB;
 
         // admission control
         // not highest priority
@@ -548,67 +549,131 @@ void SwitchNode::StartCreditDistribution(uint32_t grantBytes,
         this);
 }
 
+// void SwitchNode::DistributeCredit()
+// {
+//     const uint32_t port_count =
+//         static_cast<uint32_t>(m_creditPorts.size());
+
+//     // std::cout << "port_count: " << port_count << std::endl;
+
+//     if (port_count == 0)
+//     {
+//         return;
+//     }
+
+//     // 本轮是否足够给所有参与端口各发一份。
+//     const uint64_t required_credit =
+//         static_cast<uint64_t>(port_count) * m_creditGrantBytes;
+//     bool limited = m_mmu->credit_pool < required_credit;
+
+//     // std::cout << Simulator::Now().GetNanoSeconds() << " node " << GetId() << " event CREDIT_DISTRIBUTION" << std::endl;
+
+//     // std::cout << "required_credit: " << required_credit << ", credit_pool: " << m_mmu->credit_pool << std::endl;
+
+//     // 固定本轮使用的 credit_balance 总量。
+//     uint64_t total_credit_balance = m_mmu->total_credit_balance;
+
+//     for (uint32_t i = 0; i < port_count; ++i)
+//     {
+//         // 不足一份牌，本轮结束，下轮从当前端口继续。
+//         if (m_mmu->credit_pool < m_creditGrantBytes)
+//         {
+//             break;
+//         }
+
+//         uint32_t port = m_creditPorts[rr_cred_dis_ptr];
+
+//         bool below_average = static_cast<uint64_t>(m_mmu->credit_balance[port]) * port_count < total_credit_balance;
+
+//         if (!limited || below_average)
+//         {
+//             m_mmu->credit_pool -= m_creditGrantBytes;
+//             m_mmu->granted_credit[port] += m_creditGrantBytes;
+//             m_mmu->buffer_size[port] =
+//                 m_mmu->granted_credit[port];
+//             #if OUTPUT_1
+//             std::cout
+//             << "Time " << Simulator::Now().GetNanoSeconds()
+//             << " node " << GetId()
+//             << " port " << port
+//             << " event GRANT"
+//             << " credit_pool " << m_mmu->credit_pool
+//             << " granted_credit " << m_mmu->granted_credit[port]
+//             << " credit_balance " << m_mmu->credit_balance[port]
+//             << " total_credit_balance " << m_mmu->total_credit_balance
+//             << '\n';
+//             #endif
+//         }
+
+//         rr_cred_dis_ptr =
+//             (rr_cred_dis_ptr + 1) % port_count;
+//     }
+
+//     // std::cout << "credit grant interval " << m_creditGrantInterval.GetNanoSeconds() << " ns, credit pool " << m_mmu->credit_pool << std::endl;
+
+//     Simulator::Schedule(
+//         m_creditGrantInterval,
+//         &SwitchNode::DistributeCredit,
+//         this);
+// }
+
 void SwitchNode::DistributeCredit()
 {
+    // DT 参数：门限为当前 credit_pool 的 alpha 倍。
+    constexpr double alpha = 2.0;
+    static_assert(alpha > 0.0, "Credit alpha must be positive");
+
     const uint32_t port_count =
         static_cast<uint32_t>(m_creditPorts.size());
-
-    // std::cout << "port_count: " << port_count << std::endl;
 
     if (port_count == 0)
     {
         return;
     }
 
-    // 本轮是否足够给所有参与端口各发一份。
-    const uint64_t required_credit =
-        static_cast<uint64_t>(port_count) * m_creditGrantBytes;
-    bool limited = m_mmu->credit_pool < required_credit;
-
-    // std::cout << Simulator::Now().GetNanoSeconds() << " node " << GetId() << " event CREDIT_DISTRIBUTION" << std::endl;
-
-    // std::cout << "required_credit: " << required_credit << ", credit_pool: " << m_mmu->credit_pool << std::endl;
-
-    // 固定本轮使用的 parked_credit 总量。
-    uint64_t parked_total = m_mmu->total_parked_credit;
-
+    // 每轮最多访问所有端口一次，每个端口最多发一张。
     for (uint32_t i = 0; i < port_count; ++i)
     {
-        // 不足一份牌，本轮结束，下轮从当前端口继续。
+        // 不足一张时保留游标，下轮从当前端口继续。
         if (m_mmu->credit_pool < m_creditGrantBytes)
         {
             break;
         }
 
-        uint32_t port = m_creditPorts[rr_cred_dis_ptr];
+        const uint32_t port = m_creditPorts[rr_cred_dis_ptr];
 
-        bool below_average = static_cast<uint64_t>(m_mmu->parked_credit[port]) * port_count < parked_total;
+        // 使用访问当前端口时的池余额，而不是本轮开始时的余额。
+        const uint64_t credit_pool_before = m_mmu->credit_pool;
+        const double credit_balance_threshold =
+            alpha * static_cast<double>(credit_pool_before);
 
-        if (!limited || below_average)
+        // credit_balance 是最近一次心跳报告；这里只读取。
+        if (static_cast<double>(m_mmu->credit_balance[port]) <
+            credit_balance_threshold)
         {
             m_mmu->credit_pool -= m_creditGrantBytes;
             m_mmu->granted_credit[port] += m_creditGrantBytes;
-            m_mmu->buffer_size[port] =
-                m_mmu->granted_credit[port];
-            #if OUTPUT_1
+            m_mmu->buffer_size[port] = m_mmu->granted_credit[port];
+
+#if OUTPUT_1
             std::cout
-            << "Time " << Simulator::Now().GetNanoSeconds()
-            << " node " << GetId()
-            << " port " << port
-            << " event GRANT"
-            << " credit_pool " << m_mmu->credit_pool
-            << " granted_credit " << m_mmu->granted_credit[port]
-            << " parked_credit " << m_mmu->parked_credit[port]
-            << " total_parked_credit " << m_mmu->total_parked_credit
-            << '\n';
-            #endif
+                << "Time " << Simulator::Now().GetNanoSeconds()
+                << " node " << GetId()
+                << " port " << port
+                << " event GRANT"
+                << " credit_pool " << m_mmu->credit_pool
+                << " granted_credit " << m_mmu->granted_credit[port]
+                << " credit_balance " << m_mmu->credit_balance[port]
+                << " total_credit_balance " << m_mmu->total_credit_balance
+                << " credit_pool_before " << credit_pool_before
+                << " credit_balance_threshold " << credit_balance_threshold
+                << '\n';
+#endif
         }
 
-        rr_cred_dis_ptr =
-            (rr_cred_dis_ptr + 1) % port_count;
+        // 发牌或跳过，均继续访问下一个端口。
+        rr_cred_dis_ptr = (rr_cred_dis_ptr + 1) % port_count;
     }
-
-    // std::cout << "credit grant interval " << m_creditGrantInterval.GetNanoSeconds() << " ns, credit pool " << m_mmu->credit_pool << std::endl;
 
     Simulator::Schedule(
         m_creditGrantInterval,

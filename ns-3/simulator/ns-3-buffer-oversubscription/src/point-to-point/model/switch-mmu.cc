@@ -50,9 +50,9 @@ SwitchMmu::SwitchMmu(void) {
 	
 	memset(fccl, 0, sizeof(fccl));
 	credit_pool = 0;
-	total_parked_credit = 0;
+	total_credit_balance = 0;
 	memset(granted_credit, 0, sizeof(granted_credit));
-	memset(parked_credit, 0, sizeof(parked_credit));
+	memset(credit_balance, 0, sizeof(credit_balance));
 	memset(buffer_size, 0, sizeof(buffer_size));
 }
 
@@ -126,8 +126,8 @@ void SwitchMmu::RemoveFromIngressAdmission(uint32_t port, uint32_t qIndex, uint3
 		<< " event DATA_CREDIT_RECYCLE"
 		<< " credit_pool " << credit_pool
 		<< " granted_credit " << granted_credit[port]
-		<< " parked_credit " << parked_credit[port]
-		<< " total_parked_credit " << total_parked_credit
+		<< " credit_balance " << credit_balance[port]
+		<< " total_credit_balance " << total_credit_balance
 		<< " abr " << abr[port] 
 		<< " remainBS " << buffer_size[port] - used_bytes[port]  
 		<< " ingress_bytes " << ingress_bytes[port][qIndex]

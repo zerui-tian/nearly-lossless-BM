@@ -74,8 +74,8 @@ public:
 	uint64_t credit_pool;
 	// 每个端口累计分到的牌。
 	uint32_t granted_credit[pCnt];
-	uint32_t parked_credit[pCnt];
-	uint64_t total_parked_credit;
+	uint32_t credit_balance[pCnt];
+	uint64_t total_credit_balance;
 	uint32_t GetAdvertisedFccl(uint32_t port) const;
 };
 
