@@ -619,7 +619,7 @@ void SwitchNode::StartCreditDistribution(uint32_t grantBytes,
 
 void SwitchNode::DistributeCredit()
 {
-    // DT 参数：门限为当前 credit_pool 的 alpha 倍。
+    // 沿用当前 alpha；需要其他值时修改这里。
     constexpr double alpha = 2.0;
     static_assert(alpha > 0.0, "Credit alpha must be positive");
 
@@ -631,50 +631,86 @@ void SwitchNode::DistributeCredit()
         return;
     }
 
-    // 每轮最多访问所有端口一次，每个端口最多发一张。
-    for (uint32_t i = 0; i < port_count; ++i)
+    // 每周期最多发 port_count 张牌，同一端口可以获得多张。
+    for (uint32_t attempt = 0; attempt < port_count; ++attempt)
     {
-        // 不足一张时保留游标，下轮从当前端口继续。
+        // 剩余 credit 不足一张，结束本周期。
         if (m_mmu->credit_pool < m_creditGrantBytes)
         {
             break;
         }
 
-        const uint32_t port = m_creditPorts[rr_cred_dis_ptr];
-
-        // 使用访问当前端口时的池余额，而不是本轮开始时的余额。
+        // 每发一张牌前，使用最新池余额重新计算阈值。
         const uint64_t credit_pool_before = m_mmu->credit_pool;
         const double credit_balance_threshold =
             alpha * static_cast<double>(credit_pool_before);
 
-        // credit_balance 是最近一次心跳报告；这里只读取。
-        if (static_cast<double>(m_mmu->credit_balance[port]) <
-            credit_balance_threshold)
-        {
-            m_mmu->credit_pool -= m_creditGrantBytes;
-            m_mmu->granted_credit[port] += m_creditGrantBytes;
-            m_mmu->buffer_size[port] = m_mmu->granted_credit[port];
+        // const double credit_balance_threshold =
+        //     5 * m_creditGrantBytes;
 
-#if OUTPUT_1
-            std::cout
-                << "Time " << Simulator::Now().GetNanoSeconds()
-                << " node " << GetId()
-                << " port " << port
-                << " event GRANT"
-                << " credit_pool " << m_mmu->credit_pool
-                << " granted_credit " << m_mmu->granted_credit[port]
-                << " credit_balance " << m_mmu->credit_balance[port]
-                << " total_credit_balance " << m_mmu->total_credit_balance
-                << " credit_pool_before " << credit_pool_before
-                << " credit_balance_threshold " << credit_balance_threshold
-                << '\n';
-#endif
+        // best_idx 是 m_creditPorts 中的下标，不是设备端口号。
+        // port_count 表示暂未找到合格端口。
+        uint32_t best_idx = port_count;
+        uint32_t best_granted = 0;
+
+        // 从轮询游标开始扫描。
+        // granted_credit 相同时，保留先遇到的端口。
+        for (uint32_t offset = 0; offset < port_count; ++offset)
+        {
+            const uint32_t idx =
+                (rr_cred_dis_ptr + offset) % port_count;
+            const uint32_t port = m_creditPorts[idx];
+
+            // 发牌条件：credit_balance 严格小于 DT 阈值。
+            if (static_cast<double>(m_mmu->credit_balance[port]) >=
+                credit_balance_threshold)
+            {
+                continue;
+            }
+
+            const uint32_t granted = m_mmu->granted_credit[port];
+
+            if (best_idx == port_count || granted < best_granted)
+            {
+                best_idx = idx;
+                best_granted = granted;
+            }
         }
 
-        // 发牌或跳过，均继续访问下一个端口。
-        rr_cred_dis_ptr = (rr_cred_dis_ptr + 1) % port_count;
+        // 本次事件内没有合格端口，继续尝试也不会改变结果。
+        if (best_idx == port_count)
+        {
+            break;
+        }
+
+        const uint32_t port = m_creditPorts[best_idx];
+
+        // 发放一张牌，下一次选择使用更新后的持有量。
+        m_mmu->credit_pool -= m_creditGrantBytes;
+        m_mmu->granted_credit[port] += m_creditGrantBytes;
+        m_mmu->buffer_size[port] = m_mmu->granted_credit[port];
+
+        // credit_balance 由数据包/心跳反馈更新，此处不修改。
+        // 下一次从获牌端口的后一个位置开始，公平处理并列。
+        rr_cred_dis_ptr = (best_idx + 1) % port_count;
+
+#if OUTPUT_1
+        std::cout
+            << "Time " << Simulator::Now().GetNanoSeconds()
+            << " node " << GetId()
+            << " port " << port
+            << " event GRANT"
+            << " credit_pool " << m_mmu->credit_pool
+            << " granted_credit " << m_mmu->granted_credit[port]
+            << " credit_balance " << m_mmu->credit_balance[port]
+            << " total_credit_balance " << m_mmu->total_credit_balance
+            << " credit_pool_before " << credit_pool_before
+            << " credit_balance_threshold " << credit_balance_threshold
+            << '\n';
+#endif
     }
 
+    // 即使本周期没有发出牌，也继续安排下一周期。
     Simulator::Schedule(
         m_creditGrantInterval,
         &SwitchNode::DistributeCredit,
