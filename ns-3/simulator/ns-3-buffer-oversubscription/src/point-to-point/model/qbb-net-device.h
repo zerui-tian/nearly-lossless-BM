@@ -77,7 +77,7 @@ class QbbNetDevice : public PointToPointNetDevice
 {
 public:
   void SetIdleReturnBytes(uint32_t bytes);
-  uint32_t m_idleReturnBytes = 10;//配置空闲情况心跳包回收的credit大小
+  uint32_t m_idleReturnBytes = 100;//配置空闲情况心跳包回收的credit大小
   uint32_t packetBytes;
   static const uint32_t qCnt = Q_CNT;	// Number of queues/priorities used
   enum HeartbeatProtocol : uint16_t

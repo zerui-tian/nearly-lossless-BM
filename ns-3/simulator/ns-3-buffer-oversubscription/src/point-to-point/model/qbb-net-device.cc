@@ -487,12 +487,12 @@ QbbNetDevice::DequeueAndTransmit(void)
 			{
 				p->PeekHeader(ch);
 
+				m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
+
 				PppHeader ppp;
 				p->RemoveHeader(ppp);
-				ppp.SetCB(sw->m_mmu->fccl[m_ifIndex] - sw->m_mmu->fctbs[m_ifIndex]);
+				ppp.SetCB(sw->m_mmu->fccl[m_ifIndex] - sw->m_mmu->fctbs[m_ifIndex]); //携带本次发送消耗后的剩余credit
 				p->AddHeader(ppp);
-
-				m_node->SwitchNotifyDequeue(m_ifIndex, qIndex, p);
 
 				InterfaceTag t;
 				p->RemovePacketTag(t);

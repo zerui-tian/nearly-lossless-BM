@@ -33,7 +33,7 @@ NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 uint32_t cc_mode = 0;
 bool enable_qcn = true;
 uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
-double simulator_stop_time = 3.01;
+double simulator_stop_time = 0.001;
 std::string data_rate, link_delay, topology_file, flow_file, trace_file, trace_output_file;
 std::string fct_output_file = "fct.txt";
 std::string pfc_output_file = "pfc.txt";
@@ -1607,7 +1607,7 @@ int main(int argc, char *argv[])
 	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = (2 *100 * 2000 * 2 / 8);
+	buffer_size = (6 *100 * 2000 * 2 / 8);
 	std::cout << "buffer_size : " << buffer_size << std::endl;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch
@@ -1629,14 +1629,13 @@ int main(int argc, char *argv[])
 					NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
 					sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
 					sw->m_mmu->maxThreshold = buffer_size;
-					sw->m_mmu->SetInflightThreshold(j, qu, packet_size * 2);
+					sw->m_mmu->SetInflightThreshold(j, qu, buffer_size); // inflight threshold初始值
 					// sw->m_mmu->step[j][qu] = step_bytes;
 				}
 			}
 			sw->m_mmu->SetQlenMax(qmax*packet_size);
 			sw->m_mmu->SetQlenMin(qmin*packet_size);
-			// sw->m_mmu->SetAiStep(packet_size / 2);
-			sw->m_mmu->SetBufferPool(buffer_size); //将buffer均分给每个port的每个queue
+			sw->m_mmu->SetBufferPool(buffer_size);
 			sw->m_mmu->node_id = sw->GetId();
 			
 		}
