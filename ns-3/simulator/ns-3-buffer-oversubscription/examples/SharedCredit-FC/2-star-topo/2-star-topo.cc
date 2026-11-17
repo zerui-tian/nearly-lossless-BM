@@ -100,8 +100,10 @@ float qmin = 3;
 float qmax = 6;
 
 // 示例值，按实验需求配置。
-uint32_t credit_grant_bytes = 1052;
+uint32_t credit_grant_bytes = 1048;
 uint64_t credit_grant_interval_ns = credit_grant_bytes * 8 / 100 / 1.2;
+
+uint64_t target_credit_update_interval_ns = 25000; // 后续更新间隔：10 us
 
 unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
 unordered_map<uint64_t, double> rate2pmax;
@@ -1811,6 +1813,9 @@ int main(int argc, char *argv[])
 		sw->StartCreditDistribution(
 			credit_grant_bytes,
 			NanoSeconds(credit_grant_interval_ns));
+		//触发周期性更新target_credit
+		sw->StartTargetCreditUpdate(
+				NanoSeconds(target_credit_update_interval_ns));
 	}
 	for (uint32_t i = 0; i < n.GetN(); ++i)
 	{

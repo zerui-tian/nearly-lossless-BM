@@ -71,44 +71,14 @@ def plot_flowthroughput(
             flow_df["throughput_Gbps"],
             linewidth=2,
             color=COLORS[idx],
-            label=f"flow {idx + 1}"   # ✅ 统一命名
+            label=f"flow {fid}"   # ✅ 统一命名
         )
 
     # ================= 坐标与风格 =================
     plt.xlabel("Time (μs)")
     plt.ylabel("Throughput (Gbps)")
-    plt.ylim(bottom=0)
+    plt.ylim(0, 100)
     plt.xlim(0, 500)
-        # ===== 添加水平参考线 =====
-    for y in [10, 70]:
-        plt.axhline(
-            y=y,
-            color='black',
-            linestyle='--',
-            linewidth=1
-        )
-
-    # ===== 添加文本标注 =====
-    plt.text(
-        x=250,           # 横向中间位置（时间轴是 0~500 us）
-        y=10 + 1,        # 10Gbps 虚线稍上方
-        s="10 Gbps",
-        color='black',
-        fontsize=14,
-        ha='center',     # 水平居中
-        va='bottom'      # 文字在虚线下方
-    )
-
-    plt.text(
-        x=250,           # 横向中间位置
-        y=70 - 5,        # 70Gbps 虚线稍下方
-        s="70 Gbps",
-        color='black',
-        fontsize=14,
-        ha='center',     # 水平居中
-        va='top'         # 文字在虚线上方
-    )
-
 
     plt.grid(True, linestyle="--", alpha=0.6)
     
@@ -132,18 +102,37 @@ def plot_flowthroughput(
 # ================================
 # 3. 主流程
 # ================================
-file_path = os.path.join(REPO_ROOT, "ns-3/simulator/result/data/2-star-topo/flowthroughput.txt")
-
-flow_ids = [10000]
-
-save_path = os.path.join(save_dir, "flow-throughput.png")
-
-plot_flowthroughput(
-    file_path=file_path,
-    save_path=save_path,
-    target_sid=4,
-    target_rid=8,
-    flow_ids=flow_ids
+# ================================
+# 3. 主流程：分别绘制四个方向
+# ================================
+file_path = (
+    "/home/pnic/bm/nearly-lossless-BM/ns-3/simulator/"
+    "result/data/2-star-topo/flowthroughput.txt"
 )
 
-print("\n✅ Throughput draw finish")
+if not os.path.isfile(file_path):
+    raise FileNotFoundError(f"找不到吞吐量数据文件：{file_path}")
+
+# (源侧交换机, 中心交换机, flow_id, 方向名称)
+tasks = [
+    (4, 8, 10000, "0-to-1"),
+    (5, 8, 10001, "1-to-2"),
+    (6, 8, 10002, "2-to-3"),
+    (7, 8, 10003, "3-to-0"),
+]
+
+for sid, rid, fid, direction in tasks:
+    save_path = os.path.join(
+        save_dir,
+        f"flow-throughput-{direction}-{fid}.png"
+    )
+
+    plot_flowthroughput(
+        file_path=file_path,
+        save_path=save_path,
+        target_sid=sid,
+        target_rid=rid,
+        flow_ids=[fid],
+    )
+
+print("\nThroughput draw finish")
