@@ -45,9 +45,10 @@ private:
 
 	uint32_t m_creditGrantBytes = 0; //每次发牌大小
 	Time m_creditGrantInterval;	//每轮发牌的间隔
-
+	Time m_targetCreditUpdateInterval;
 	bool m_creditDistributionStarted = false; //不能重复发牌
-
+	uint32_t m_targetCreditEpsilon = 4096;
+	bool m_targetCreditUpdateStarted = false; // 防止重复启动
 	void DistributeCredit(); //发牌核心函数
 	
 	int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
@@ -66,6 +67,8 @@ public:
 	
 	void SwitchReceiveFcp(Ptr<Packet> p,uint32_t port);
 	// for approximate calc in PINT
+	void StartTargetCreditUpdate(Time interval);
+	void UpdateTargetCredit();
 	int logres_shift(int b, int l);
 	int log2apprx(int x, int b, int m, int l); // given x of at most b bits, use most significant m bits of x, calc the result in l bits
 	void StartCreditDistribution(uint32_t grantBytes,

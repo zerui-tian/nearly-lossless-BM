@@ -76,6 +76,11 @@ public:
 	uint32_t granted_credit[pCnt];
 	uint32_t credit_balance[pCnt];
 	uint64_t total_credit_balance;
+	uint32_t target_credit[pCnt];
+	uint32_t ema_credit_balance[pCnt];
+	uint32_t demand_credit[pCnt];
+	uint32_t credit_threshold = 10 * 1048;
+	bool credit_balance_ewma_valid[pCnt];
 	uint32_t GetAdvertisedFccl(uint32_t port) const;
 };
 

@@ -157,7 +157,21 @@ SwitchNode::SendToDev(Ptr<Packet> p, CustomHeader& ch)
         if (tap) {
             m_mmu->need_ret_tap[inDev][qIndex] = true;
         }
-        m_mmu->credit_balance[inDev] = ch.pppCB;
+        const double alpha = 1.0 / 8.0;
+        const double sample = static_cast<double>(ch.pppCB);
+        m_mmu->total_credit_balance = m_mmu->total_credit_balance - m_mmu->credit_balance[inDev] + sample;
+
+        m_mmu->credit_balance[inDev] = sample;
+
+        if (!m_mmu->credit_balance_ewma_valid[inDev])
+        {
+            m_mmu->credit_balance_ewma_valid[inDev] = true;
+            m_mmu->ema_credit_balance[inDev] = sample;
+        }
+        else
+        {
+            m_mmu->ema_credit_balance[inDev] += alpha * (sample - m_mmu->ema_credit_balance[inDev]);
+        }
 
         // admission control
         // not highest priority
@@ -619,102 +633,302 @@ void SwitchNode::StartCreditDistribution(uint32_t grantBytes,
 
 void SwitchNode::DistributeCredit()
 {
-    // 沿用当前 alpha；需要其他值时修改这里。
-    constexpr double alpha = 2.0;
-    static_assert(alpha > 0.0, "Credit alpha must be positive");
+    const uint32_t port_count = static_cast<uint32_t>(m_creditPorts.size());
+    if (port_count == 0) return;
 
-    const uint32_t port_count =
-        static_cast<uint32_t>(m_creditPorts.size());
+    const uint32_t start = rr_cred_dis_ptr;   // 固定本轮起点
+    uint32_t last_granted = start;            // 记录最后发牌索引（无发牌则不动）
 
-    if (port_count == 0)
-    {
-        return;
-    }
-
-    // 每周期最多发 port_count 张牌，同一端口可以获得多张。
     for (uint32_t attempt = 0; attempt < port_count; ++attempt)
     {
-        // 剩余 credit 不足一张，结束本周期。
-        if (m_mmu->credit_pool < m_creditGrantBytes)
-        {
-            break;
-        }
+        if (m_mmu->credit_pool < m_creditGrantBytes) break;
 
-        // 每发一张牌前，使用最新池余额重新计算阈值。
-        const uint64_t credit_pool_before = m_mmu->credit_pool;
-        const double credit_balance_threshold =
-            alpha * static_cast<double>(credit_pool_before);
+        const uint32_t idx  = (start + attempt) % port_count;   // 固定基址，不漂移
+        const uint32_t port = m_creditPorts[idx];
 
-        // const double credit_balance_threshold =
-        //     5 * m_creditGrantBytes;
+        if (m_mmu->granted_credit[port] >= m_mmu->target_credit[port])
+            continue;
 
-        // best_idx 是 m_creditPorts 中的下标，不是设备端口号。
-        // port_count 表示暂未找到合格端口。
-        uint32_t best_idx = port_count;
-        uint32_t best_granted = 0;
-
-        // 从轮询游标开始扫描。
-        // granted_credit 相同时，保留先遇到的端口。
-        for (uint32_t offset = 0; offset < port_count; ++offset)
-        {
-            const uint32_t idx =
-                (rr_cred_dis_ptr + offset) % port_count;
-            const uint32_t port = m_creditPorts[idx];
-
-            // 发牌条件：credit_balance 严格小于 DT 阈值。
-            if (static_cast<double>(m_mmu->credit_balance[port]) >=
-                credit_balance_threshold)
-            {
-                continue;
-            }
-
-            const uint32_t granted = m_mmu->granted_credit[port];
-
-            if (best_idx == port_count || granted < best_granted)
-            {
-                best_idx = idx;
-                best_granted = granted;
-            }
-        }
-
-        // 本次事件内没有合格端口，继续尝试也不会改变结果。
-        if (best_idx == port_count)
-        {
-            break;
-        }
-
-        const uint32_t port = m_creditPorts[best_idx];
-
-        // 发放一张牌，下一次选择使用更新后的持有量。
-        m_mmu->credit_pool -= m_creditGrantBytes;
+        m_mmu->credit_pool          -= m_creditGrantBytes;
         m_mmu->granted_credit[port] += m_creditGrantBytes;
-        m_mmu->buffer_size[port] = m_mmu->granted_credit[port];
+        m_mmu->buffer_size[port]     = m_mmu->granted_credit[port];
+        last_granted = idx;                                      // 记录
 
-        // credit_balance 由数据包/心跳反馈更新，此处不修改。
-        // 下一次从获牌端口的后一个位置开始，公平处理并列。
-        rr_cred_dis_ptr = (best_idx + 1) % port_count;
-
-#if OUTPUT_1
-        std::cout
-            << "Time " << Simulator::Now().GetNanoSeconds()
-            << " node " << GetId()
-            << " port " << port
-            << " event GRANT"
-            << " credit_pool " << m_mmu->credit_pool
-            << " granted_credit " << m_mmu->granted_credit[port]
-            << " credit_balance " << m_mmu->credit_balance[port]
-            << " total_credit_balance " << m_mmu->total_credit_balance
-            << " credit_pool_before " << credit_pool_before
-            << " credit_balance_threshold " << credit_balance_threshold
-            << '\n';
-#endif
+        #if OUTPUT_1
+        std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+                  << " node " << GetId()
+                  << " port " << port
+                  << " event GRANT"
+                  << " credit_pool " << m_mmu->credit_pool
+                  << " granted_credit " << m_mmu->granted_credit[port]
+                  << " credit_balance " << m_mmu->credit_balance[port]
+                  << " total_credit_balance " << m_mmu->total_credit_balance
+                  << '\n';
+        #endif
     }
 
-    // 即使本周期没有发出牌，也继续安排下一周期。
-    Simulator::Schedule(
-        m_creditGrantInterval,
-        &SwitchNode::DistributeCredit,
-        this);
+    // 推进到"最后发牌端口的后一位"；若一张没发，也推进一位避免下次卡同一端口
+    rr_cred_dis_ptr = (last_granted + 1) % port_count;
+
+    Simulator::Schedule(m_creditGrantInterval, &SwitchNode::DistributeCredit, this);
+}
+
+void SwitchNode::StartTargetCreditUpdate(Time interval)
+{
+    if (m_creditPorts.empty())
+        return;
+
+    m_targetCreditUpdateInterval = interval;
+    m_targetCreditUpdateStarted = true;
+    Simulator::ScheduleNow(&SwitchNode::UpdateTargetCredit, this);
+}
+
+// void SwitchNode::UpdateTargetCredit()
+// {
+//     if (m_creditPorts.empty())
+//         return;
+
+//     struct PortCredit
+//     {
+//         uint32_t port;
+//         uint64_t demandCap;
+//         uint64_t target;
+//     };
+
+//     const uint64_t B = m_mmu->total_buffer;
+//     const uint64_t epsilon = m_targetCreditEpsilon;
+
+//     std::vector<PortCredit> ports;
+//     ports.reserve(m_creditPorts.size());
+
+//     uint64_t capSum = 0;
+
+//     // 1. 根据 MMU 当前状态，计算各端口的需求上限。
+//     for (uint32_t port : m_creditPorts)
+//     {
+//         NS_ABORT_MSG_IF(port >= SwitchMmu::pCnt,
+//                         "Port exceeds MMU target_credit array");
+
+//         const uint64_t granted = m_mmu->granted_credit[port];
+//         const uint64_t balance = m_mmu->ema_credit_balance[port];
+
+//         uint64_t cap;
+
+//         if (balance * 2 < epsilon)
+//         {
+//             cap = B;
+//         }
+//         else
+//         {
+//             // 先转成有符号数，避免 balance > granted 时下溢。
+//             const int64_t demand =
+//                 static_cast<int64_t>(granted)
+//                 - static_cast<int64_t>(balance)
+//                 + static_cast<int64_t>(epsilon);
+
+//             cap = demand > 0
+//                 ? std::min(B, static_cast<uint64_t>(demand))
+//                 : 0;
+//         }
+
+//         ports.push_back(PortCredit{port, cap, 0});
+
+//         // 累计到 B 即可，避免多个 cap 相加溢出。
+//         capSum += std::min(cap, B - capSum);
+//     }
+
+//     // 2. 总需求不足：满足需求后，均分剩余额度。
+//     if (capSum < B)
+//     {
+//         const uint64_t extra = (B - capSum) / ports.size();
+//         const uint64_t remainder = (B - capSum) % ports.size();
+
+//         for (std::size_t i = 0; i < ports.size(); ++i)
+//         {
+//             ports[i].target = ports[i].demandCap + extra
+//                             + (i < remainder ? 1 : 0);
+//         }
+//     }
+//     else
+//     {
+//         // 3. 总需求充足：先满足小需求，再均分剩余额度。
+//         std::sort(
+//             ports.begin(), ports.end(),
+//             [](const PortCredit& a, const PortCredit& b)
+//             {
+//                 if (a.demandCap != b.demandCap)
+//                     return a.demandCap < b.demandCap;
+//                 return a.port < b.port;
+//             });
+
+//         uint64_t remaining = B;
+
+//         for (std::size_t i = 0; i < ports.size(); ++i)
+//         {
+//             const uint64_t count = ports.size() - i;
+//             const uint64_t fairShare = remaining / count;
+
+//             if (ports[i].demandCap <= fairShare)
+//             {
+//                 ports[i].target = ports[i].demandCap;
+//                 remaining -= ports[i].target;
+//             }
+//             else
+//             {
+//                 const uint64_t remainder = remaining % count;
+
+//                 for (std::size_t j = i; j < ports.size(); ++j)
+//                 {
+//                     ports[j].target =
+//                         fairShare + (j - i < remainder ? 1 : 0);
+//                 }
+//                 break;
+//             }
+//         }
+//     }
+
+//     // 4. 检查整数范围和分配总量。
+//     uint64_t targetSum = 0;
+
+//     for (const PortCredit& credit : ports)
+//     {
+//         NS_ABORT_MSG_IF(
+//             credit.target > std::numeric_limits<uint32_t>::max(),
+//             "Target credit exceeds uint32_t byte counter");
+
+//         targetSum += credit.target;
+//     }
+
+//     NS_ABORT_MSG_IF(targetSum != B,
+//                     "Sum of target credit must equal total buffer");
+
+//     // 5. 写回 MMU。
+//     for (const PortCredit& credit : ports)
+//     {
+//         m_mmu->target_credit[credit.port] =
+//             static_cast<uint32_t>(credit.target);
+
+//         #if OUTPUT_1
+//         std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+//                   << " node " << GetId()
+//                   << " port " << credit.port
+//                   << " event UPDATE_TARGET_CREDIT"
+//                   << " target_credit "
+//                   << m_mmu->target_credit[credit.port]
+//                   << std::endl;
+//         #endif
+//     }
+
+//     // 6. 安排下一次更新。
+//     Simulator::Schedule(m_targetCreditUpdateInterval,
+//                         &SwitchNode::UpdateTargetCredit,
+//                         this);
+// }
+
+void SwitchNode::UpdateTargetCredit()
+{
+    if (m_creditPorts.empty())
+        return;
+
+    struct PortCredit
+    {
+        uint32_t port;
+        uint64_t demandCap;
+        uint64_t target;
+    };
+
+    const uint64_t B = m_mmu->total_buffer;
+
+    std::vector<PortCredit> ports;
+    ports.reserve(m_creditPorts.size());
+
+    // 1. 根据 MMU 当前状态，计算各端口的需求上限。
+    for (uint32_t port : m_creditPorts)
+    {
+        const uint64_t balance = m_mmu->ema_credit_balance[port];
+        // if(balance > m_mmu->credit_threshold) {
+        //     m_mmu->demand_credit[port] = m_mmu->target_credit[port] - (balance - m_mmu->credit_threshold);
+        // }
+        // else {
+        //     m_mmu->demand_credit[port] += (m_mmu->credit_threshold - balance);
+        // }
+        m_mmu->demand_credit[port] = m_mmu->target_credit[port] + m_mmu->credit_threshold - balance;
+        ports.push_back(PortCredit{port, m_mmu->demand_credit[port], 0});
+    }
+
+   // 3. 总需求充足：先满足小需求，再均分剩余额度。
+    std::sort(ports.begin(), ports.end(),
+        [](const PortCredit& a, const PortCredit& b)
+        {
+            if (a.demandCap != b.demandCap)
+                return a.demandCap < b.demandCap;
+            return a.port < b.port;
+        });
+    
+    uint64_t remaining = B;
+    for (std::size_t i = 0; i < ports.size(); ++i)
+    {
+        const uint64_t count = ports.size() - i;
+        const uint64_t fairShare = remaining / count;
+
+        if (ports[i].demandCap <= fairShare)
+        {
+            ports[i].target = ports[i].demandCap;
+            remaining -= ports[i].target;
+        }
+        else
+        {
+            const uint64_t remainder = remaining % count;
+            for (std::size_t j = i; j < ports.size(); ++j)
+            {
+                ports[j].target = fairShare + (j - i < remainder ? 1 : 0);
+            }
+            remaining = 0;
+            break;
+        }
+    }
+    //剩余credit 均分所有端口
+    if (remaining > 0)
+    {
+        const uint64_t extra = remaining / ports.size();
+        const uint64_t remainder = remaining % ports.size();
+        for (std::size_t i = 0; i < ports.size(); ++i)
+        {
+            ports[i].target += extra + (i < remainder ? 1 : 0);
+        }
+    }
+    //断言分配credit总和 = buffer_size
+    uint64_t targetSum = 0;
+    for (const PortCredit& credit : ports)
+    {
+        NS_ABORT_MSG_IF(credit.target > std::numeric_limits<uint32_t>::max(),
+                        "Target credit exceeds uint32_t byte counter");
+        NS_ABORT_MSG_IF(credit.target > B - targetSum,
+                        "Target credit allocation exceeds total buffer");
+        targetSum += credit.target;
+    }
+    NS_ABORT_MSG_IF(targetSum != B,
+                    "Sum of target credit must equal total buffer");
+
+    // 4. 更新target_credit
+    for (const PortCredit& credit : ports)
+    {
+        m_mmu->target_credit[credit.port] = static_cast<uint32_t>(credit.target);
+        #if OUTPUT_1
+        std::cout << "Time " << Simulator::Now().GetNanoSeconds()
+                    << " node " << GetId()
+                    << " port " << credit.port
+                    << " event UPDATE_TARGET_CREDIT"
+                    << " ema_credit_balance " << m_mmu->ema_credit_balance[credit.port]
+                    << " demand_credit " << m_mmu->demand_credit[credit.port]
+                    << " target_credit " << m_mmu->target_credit[credit.port]
+                    << std::endl;
+        #endif
+    }
+    
+    Simulator::Schedule(m_targetCreditUpdateInterval,
+                        &SwitchNode::UpdateTargetCredit,
+                        this);
 }
 
 int

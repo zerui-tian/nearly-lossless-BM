@@ -33,7 +33,7 @@ NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 uint32_t cc_mode = 0;
 bool enable_qcn = true;
 uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
-double simulator_stop_time = 3.01;
+double simulator_stop_time = 0.001;
 std::string data_rate, link_delay, topology_file, flow_file, trace_file, trace_output_file;
 std::string fct_output_file = "fct.txt";
 std::string pfc_output_file = "pfc.txt";
@@ -92,7 +92,7 @@ uint32_t flowrate_mon_start;
 uint32_t flowrate_mon_end;
 
 
-uint32_t buffer_size = 125; //BDP = 64250000 Bytes for 25Gbps 5us
+uint32_t buffer_size; //BDP = 64250000 Bytes for 25Gbps 5us
 uint32_t maxThreshold = 100000; 
 
 uint32_t p_queue_count = 8;
@@ -101,7 +101,9 @@ float qmax = 6;
 
 // 示例值，按实验需求配置。
 uint32_t credit_grant_bytes = 1048;
-uint64_t credit_grant_interval_ns = credit_grant_bytes * 8 / 100;
+uint64_t credit_grant_interval_ns = credit_grant_bytes * 8 / 100 / 1.2;
+
+uint64_t target_credit_update_interval_ns = 25000; // 后续更新间隔：10 us
 
 unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
 unordered_map<uint64_t, double> rate2pmax;
@@ -264,7 +266,7 @@ void dump_zero_credit_ports(const NodeContainer& nodes) {
 
 			const uint32_t out_port = output_device->GetIfIndex();
 			NS_ASSERT_MSG(out_port < SwitchMmu::pCnt, "Egress port exceeds MMU arrays");
-			if (upstream->m_mmu->fccl[out_port] - upstream->m_mmu->fctbs[out_port] >= 1048)
+			if (upstream->m_mmu->fccl[out_port] - upstream->m_mmu->fctbs[out_port] >= 1052)
 				continue;
 
 			++matched_ports; // Include matching ports even when the egress queue is empty.
@@ -1289,9 +1291,9 @@ int main(int argc, char *argv[])
 				std::cout << ' ' << rate << ' ' << p;
 			}
 			std::cout << '\n';
-		// } else if (key.compare("BUFFER_SIZE") == 0) {
-		// 	conf >> buffer_size;
-		// 	std::cout << "BUFFER_SIZE\t\t\t\t" << buffer_size << '\n';
+		} else if (key.compare("BUFFER_SIZE") == 0) {
+			conf >> buffer_size;
+			std::cout << "BUFFER_SIZE\t\t\t\t" << buffer_size << '\n';
 
 		// }  else if (key.compare("QLEN_MON_FILE") == 0) {
 		// 	conf >> qlen_mon_file;
@@ -1607,9 +1609,8 @@ int main(int argc, char *argv[])
 	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = SwitchMmu::pCnt * (0.7 * 100 * 1000 * 2 / 8);
-	std::cout << "buffer_size : " << buffer_size << std::endl;
-	uint32_t per_port_buffer = buffer_size / SwitchMmu::pCnt;
+	// buffer_size = (10 * 100 * 1000 * 2 / 8);
+	// std::cout << "buffer_size : " << buffer_size << std::endl;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch
 			Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
@@ -1620,6 +1621,8 @@ int main(int argc, char *argv[])
 					Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
 					uint64_t rate = dev->GetDataRate().GetBitRate();
 					uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetNanoSeconds();
+					// set inflight threshold
+					uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
 					// dev->qCnt = p_queue_count;
 					// dev->m_rdmaEQ->qCnt = p_queue_count;
 					// set ecn
@@ -1627,15 +1630,14 @@ int main(int argc, char *argv[])
 					NS_ASSERT_MSG(rate2kmax.find(rate) != rate2kmax.end(), "must set kmax for each link speed");
 					NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
 					sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
-					sw->m_mmu->maxThreshold = per_port_buffer;
-					sw->m_mmu->SetInflightThreshold(j, qu, packet_size * 2);
+					sw->m_mmu->maxThreshold = buffer_size;
+					sw->m_mmu->SetInflightThreshold(j, qu, buffer_size); // inflight threshold初始值
 					// sw->m_mmu->step[j][qu] = step_bytes;
 				}
 			}
 			sw->m_mmu->SetQlenMax(qmax*packet_size);
 			sw->m_mmu->SetQlenMin(qmin*packet_size);
-			// sw->m_mmu->SetAiStep(packet_size / 2);
-			sw->m_mmu->SetBufferPool(buffer_size); //将buffer均分给每个port的每个queue
+			sw->m_mmu->SetBufferPool(buffer_size);
 			sw->m_mmu->node_id = sw->GetId();
 			
 		}
@@ -1695,11 +1697,11 @@ int main(int argc, char *argv[])
 				dev->SetQlenMin(qmin*packet_size);
 				// dev->SetAiStep(packet_size / 2);
 				
-				// uint64_t rate = dev->GetDataRate().GetBitRate();
-				// uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetNanoSeconds();
+				uint64_t rate = dev->GetDataRate().GetBitRate();
+				uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetNanoSeconds();
 				// set inflight threshold
-				// uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
-				dev->maxThreshold = per_port_buffer;
+				uint64_t bdp_in_bytes = rate * delay / 1000000000 / 8 * 2;
+				dev->maxThreshold = buffer_size;
 				for(int qu = 0; qu < QbbNetDevice::qCnt; qu++){
 					dev->perpg_inflight_threshold[qu] = packet_size * 2;//sgh 10/18
 					// dev->m_step[qu] = step_bytes;
@@ -1788,9 +1790,11 @@ int main(int argc, char *argv[])
 	tracef.close();
 
 	FILE *flowthroughput_file = fopen(flowthroughput_output_file.c_str(), "w");
-	std::vector<uint32_t> target_fids = {10000};
-
+	std::vector<uint32_t> target_fids = {10000,10001,10002,10003};
 	Simulator::Schedule(NanoSeconds(flowthroughput_mon_start), monitor_flowlink, flowthroughput_file, &nd, target_fids);
+
+	FILE *throughput_file = fopen(throughput_output_file.c_str(), "w");
+	Simulator::Schedule(NanoSeconds(throughput_mon_start), monitor_link, throughput_file, &nd);
 
 	std::cout << "Running Simulation.\n";
 	NS_LOG_INFO("Run Simulation.");
@@ -1809,6 +1813,9 @@ int main(int argc, char *argv[])
 		sw->StartCreditDistribution(
 			credit_grant_bytes,
 			NanoSeconds(credit_grant_interval_ns));
+		//触发周期性更新target_credit
+		sw->StartTargetCreditUpdate(
+				NanoSeconds(target_credit_update_interval_ns));
 	}
 	for (uint32_t i = 0; i < n.GetN(); ++i)
 	{
@@ -1830,8 +1837,8 @@ int main(int argc, char *argv[])
 		}
 	}
 	Simulator::Run();
-	// dump_zero_credit_ports(n);
-	// dump_credit_relations(n, buffer_size);
+	dump_zero_credit_ports(n);
+	dump_credit_relations(n, buffer_size);
 	dump_unfinished_flows(unfinished_flow_output_file);
 	Simulator::Destroy();
 	NS_LOG_INFO("Done.");

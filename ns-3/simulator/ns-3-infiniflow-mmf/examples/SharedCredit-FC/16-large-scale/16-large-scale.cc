@@ -970,9 +970,9 @@ int main(int argc, char *argv[])
 				std::cout << ' ' << rate << ' ' << p;
 			}
 			std::cout << '\n';
-		// } else if (key.compare("BUFFER_SIZE") == 0) {
-		// 	conf >> buffer_size;
-		// 	std::cout << "BUFFER_SIZE\t\t\t\t" << buffer_size << '\n';
+		} else if (key.compare("BUFFER_SIZE") == 0) {
+			conf >> buffer_size;
+			std::cout << "BUFFER_SIZE\t\t\t\t" << buffer_size << '\n';
 		// }  else if (key.compare("QLEN_MON_FILE") == 0) {
 		// 	conf >> qlen_mon_file;
 		// 	std::cout << "QLEN_MON_FILE\t\t\t\t" << qlen_mon_file << '\n';

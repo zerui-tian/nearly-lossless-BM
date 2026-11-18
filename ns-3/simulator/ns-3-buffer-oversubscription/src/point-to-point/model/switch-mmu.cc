@@ -54,6 +54,7 @@ SwitchMmu::SwitchMmu(void) {
 	memset(granted_credit, 0, sizeof(granted_credit));
 	memset(credit_balance, 0, sizeof(credit_balance));
 	memset(buffer_size, 0, sizeof(buffer_size));
+	memset(credit_balance_ewma_valid, false, sizeof(credit_balance_ewma_valid));
 }
 
 bool SwitchMmu::CheckIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize) {
@@ -213,6 +214,7 @@ void SwitchMmu::SetBufferPool(uint64_t b) {
 		// buffer_size[p] = per_port_buffer_size;
 		// fccl[p] = buffer_size[p]; 
 		granted_credit[p] = 0;
+		target_credit[p] = b / 4;
 	}
 }
 

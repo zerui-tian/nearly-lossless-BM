@@ -1609,7 +1609,7 @@ int main(int argc, char *argv[])
 	// uint32_t step_bytes = packet_size * 1;
 	// config switch
 	// The switch mmu runs Dynamic Thresholds (DT) by default.
-	buffer_size = (2 * 100 * 2000 * 2 / 8);
+	buffer_size = (64 * 100 * 2000 * 2 / 8);
 	std::cout << "buffer_size : " << buffer_size << std::endl;
 	for (uint32_t i = 0; i < node_num; i++) {
 		if (n.Get(i)->GetNodeType()) { // is switch

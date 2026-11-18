@@ -976,8 +976,34 @@ void QbbNetDevice::ReceiveHeartbeat(Ptr<Packet> packet,
 					sw->m_mmu->granted_credit[m_ifIndex];
 			}
 			// 保存上游报告的最新剩余额度。
-			sw->m_mmu->total_credit_balance= sw->m_mmu->total_credit_balance- sw->m_mmu->credit_balance[m_ifIndex] + h.GetCredit();
-			sw->m_mmu->credit_balance[m_ifIndex] = h.GetCredit();
+			// sw->m_mmu->total_credit_balance= sw->m_mmu->total_credit_balance- sw->m_mmu->credit_balance[m_ifIndex] + h.GetCredit();
+			// sw->m_mmu->credit_balance[m_ifIndex] = h.GetCredit();
+			const uint32_t latestCredit = h.GetCredit();
+
+			// 维护原始余额总量：减去旧值，再加上最新报告。
+			sw->m_mmu->total_credit_balance =
+				sw->m_mmu->total_credit_balance
+				- sw->m_mmu->credit_balance[m_ifIndex]
+				+ latestCredit;
+
+			// 保存最新原始余额。
+			sw->m_mmu->credit_balance[m_ifIndex] = latestCredit;
+
+			// 更新该端口余额的指数滑动平均。
+			const double alpha = 1.0 / 8.0;
+			const double sample = static_cast<double>(latestCredit);
+
+			if (!sw->m_mmu->credit_balance_ewma_valid[m_ifIndex])
+			{
+				sw->m_mmu->ema_credit_balance[m_ifIndex] = sample;
+				sw->m_mmu->credit_balance_ewma_valid[m_ifIndex] = true;
+			}
+			else
+			{
+				sw->m_mmu->ema_credit_balance[m_ifIndex] +=
+					alpha * (sample - sw->m_mmu->ema_credit_balance[m_ifIndex]);
+			}
+
 			#if OUTPUT_1
 			std::cout
 			<< "Time " << Simulator::Now().GetNanoSeconds()

@@ -1,0 +1,15 @@
+build/*
+cmake-cache/
+build/
+results/
+*.o
+*.a
+*.so
+.env
+.env.*
+.codex/
+.lock-ns3*
+__pycache__/
+*.pyc
+mix/fct.txt
+mix/pfc.txt

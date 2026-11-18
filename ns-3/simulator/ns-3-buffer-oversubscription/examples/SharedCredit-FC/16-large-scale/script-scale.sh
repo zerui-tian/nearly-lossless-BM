@@ -40,7 +40,7 @@ loadNums=("80") # 4
 base_dir="$EXAMPLE_DIR/16-large-scale"
 config_dir="$base_dir/16-large-scale_config_temp"
 flow_dir="$base_dir/flow"
-output_dir="$OUTPUT/16-large-scale/infiniflow"
+output_dir="$OUTPUT/16-large-scale/bm"
 config_file="$config_dir/config-scale.txt"
 
 mkdir -p "$output_dir"
